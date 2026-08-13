@@ -5,7 +5,7 @@ SHORT DESCRIPTION
     Use local AI chat, command assistance, and multi-step Agent features in official PowerShell.
 
 PLATFORMS
-    PowerShell 7.4 or later on Windows, Linux, and macOS.
+    PowerShell 7.4 or later on Windows. Linux and macOS are not supported by this release.
 
 GETTING STARTED
     Type ai and press Enter to open settings, add a model, and select it.
@@ -47,5 +47,5 @@ SAFETY CONFIRMATION
 
 NOTES
     No model is bundled. The first installation starts in Off mode and does not connect automatically.
-    API keys are never written to JSON. Windows uses Credential Manager, macOS uses Keychain,
-    and Linux uses Secret Service. If the platform store is unavailable, SessionOnly can be selected.
+    API keys are never written to JSON. Windows uses Credential Manager.
+    If the platform store is unavailable, SessionOnly can be selected.

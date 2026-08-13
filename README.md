@@ -2,7 +2,9 @@
 
 [![CI](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml/badge.svg)](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml)
 
-适用于 Windows、Linux 和 macOS 上官方 PowerShell 7.4 及以上版本的本地 AI 终端模块。无需修改或重新编译 PowerShell。
+适用于 Windows 上官方 PowerShell 7.4 及以上版本的本地 AI 终端模块。无需修改或重新编译 PowerShell。
+
+当前 `0.5.2` 发布仅支持并验收 Windows。源码中保留的 Linux/macOS 适配代码尚未纳入当前发布保证或 CI 门禁，请勿将其视为受支持平台。
 
 ## 安装
 
@@ -31,8 +33,6 @@ pwsh -NoProfile -File ./Install-PSAITerminal.ps1 -NoProfileIntegration
 | 平台 | 配置目录 | 会话与 Run 数据目录 |
 |---|---|---|
 | Windows | `<Documents>/PowerShell/PSAITerminal` | `%LOCALAPPDATA%/PowerShell/PSAITerminal` |
-| Linux | `$XDG_CONFIG_HOME/powershell/AITerminal`，未设置时为 `~/.config/powershell/AITerminal` | `$XDG_DATA_HOME/powershell/AITerminal`，未设置时为 `~/.local/share/powershell/AITerminal` |
-| macOS | `$XDG_CONFIG_HOME/powershell/AITerminal`，未设置时为 `~/.config/powershell/AITerminal` | `$XDG_DATA_HOME/powershell/AITerminal`；未设置时为 `~/Library/Application Support/powershell/AITerminal` |
 
 Windows 的 `<Documents>` 以系统“文档”已知文件夹为准，可能被重定向到其他磁盘；可在 PowerShell 中用 `[Environment]::GetFolderPath('MyDocuments')` 查看实际路径。
 
@@ -62,9 +62,7 @@ Test-PSAIConfiguration
 
 支持 OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini Native `generateContent` 和 Ollama。OpenAI 兼容地址可以写成包含或不包含 `/v1` 的形式，也可以带反向代理路径前缀。
 
-新增模型时，模块会先尝试读取服务端模型列表供选择；服务不提供列表接口时仍可手动输入模型 ID。API Key 不写入 JSON 配置：Windows 使用 Credential Manager，macOS 使用 Keychain，Linux 使用 Secret Service。
-
-Linux 需要 `secret-tool`（通常由 `libsecret-tools` 提供）和可用的桌面密钥环。密钥库不可用时，交互设置会询问是否仅在当前 PowerShell 会话使用 API Key；命令行可显式使用 `New-PSAIModel -SessionOnly`。
+新增模型时，模块会先尝试读取服务端模型列表供选择；服务不提供列表接口时仍可手动输入模型 ID。API Key 不写入 JSON 配置，Windows 使用 Credential Manager。密钥库不可用时，交互设置会询问是否仅在当前 PowerShell 会话使用 API Key；命令行可显式使用 `New-PSAIModel -SessionOnly`。
 
 连接检查：
 
@@ -107,7 +105,6 @@ pwsh -NoProfile -File ./Uninstall-PSAITerminal.ps1
 
 - `Import-Module PSAITerminal` 找不到模块：请在你日常使用的同一个 `pwsh` 中重新运行安装器。
 - 新增的模型看不到：运行 `Test-PSAIConfiguration` 核对“配置文件”路径；不要在不同终端中设置不同的 `PSAI_CONFIG_HOME`。
-- Linux 显示密钥库不可用：安装 `libsecret-tools` 并确认 Secret Service 已启动，或使用仅当前会话密钥。
 - F2/F3 没反应：先确认模块已自动加载，再看 `Get-PSAIIntegrationStatus` 中快捷键是否为“已启用”。
 - 快捷键冲突：模块不会覆盖用户自定义的 PSReadLine 绑定；移除冲突后重启 PowerShell。
 - 查看详细帮助：`Get-Help about_PSAITerminal`。

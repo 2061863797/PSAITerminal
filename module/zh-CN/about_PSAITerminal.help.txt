@@ -5,7 +5,7 @@
     在官方 PowerShell 中使用本地 AI 问答、命令建议和多步骤 Agent。
 
 平台
-    支持 Windows、Linux 和 macOS 上的 PowerShell 7.4 及以上版本。
+    支持 Windows 上的 PowerShell 7.4 及以上版本。本发布不支持 Linux 和 macOS。
 
 开始使用
     输入 ai 并按 Enter，新增并选择模型。
@@ -49,5 +49,5 @@
 
 说明
     PSAITerminal 不预置模型，首次安装默认为 Off，也不会自动联网。
-    API Key 不写入 JSON 配置。Windows 使用 Credential Manager，macOS 使用 Keychain，
-    Linux 使用 Secret Service；密钥库不可用时可显式选择仅当前会话使用。
+    API Key 不写入 JSON 配置。Windows 使用 Credential Manager；
+    密钥库不可用时可显式选择仅当前会话使用。

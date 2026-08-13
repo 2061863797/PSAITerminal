@@ -3045,7 +3045,7 @@ function Test-PSAIConfiguration {
 
     $module = $ExecutionContext.SessionState.Module
     $platform = if ($IsWindows) { 'Windows' } elseif ($IsMacOS) { 'macOS' } elseif ($IsLinux) { 'Linux' } else { [Environment]::OSVersion.Platform.ToString() }
-    & $add '操作系统' ($IsWindows -or $IsMacOS -or $IsLinux) $platform '当前仅支持 Windows、Linux 和 macOS'
+    & $add '操作系统' $IsWindows $platform $(if($IsWindows){''}else{'当前发布仅支持 Windows'})
     $secretStoreAvailable = [PSAITerminal.PlatformCredentialStore]::IsAvailable
     $secretStoreName = [PSAITerminal.PlatformCredentialStore]::BackendName
     $secretStoreAction = if ($secretStoreAvailable) { '' }
