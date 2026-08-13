@@ -10,8 +10,8 @@ import pty
 import re
 import select
 import shutil
+import signal
 import struct
-import subprocess
 import sys
 import tempfile
 import termios
@@ -24,6 +24,7 @@ CONTROL_SEQUENCE = re.compile(
     r"(?:\x1b[()][0-2A-Z])|"
     r"[\x00-\x08\x0b\x0c\x0e-\x1a]"
 )
+WINDOW_SIZE = struct.pack("HHHH", 40, 120, 0, 0)
 
 
 def clean(value: bytes) -> str:
@@ -32,26 +33,44 @@ def clean(value: bytes) -> str:
 
 class Terminal:
     def __init__(self, pwsh: str, manifest: str, state_root: str) -> None:
-        master, slave = pty.openpty()
-        # GitHub Runner 创建的 PTY 可能默认为 0×0，PSReadLine 渲染时会因此除零。
-        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
         environment["PSAI_CONFIG_HOME"] = os.path.join(state_root, "config")
         environment["PSAI_DATA_HOME"] = os.path.join(state_root, "data")
+        pid, master = pty.fork()
+        if pid == 0:
+            try:
+                # Runner 的默认 PTY 可能为 0×0；子进程执行前必须设置有效尺寸。
+                fcntl.ioctl(0, termios.TIOCSWINSZ, WINDOW_SIZE)
+                os.chdir(os.path.dirname(manifest))
+                os.execve(pwsh, [pwsh, "-NoLogo", "-NoProfile"], environment)
+            except BaseException as exception:  # noqa: BLE001 - exec 失败后只能直接退出子进程
+                os.write(2, f"启动 PowerShell 失败：{exception}\n".encode("utf-8", errors="replace"))
+                os._exit(127)
+
+        fcntl.ioctl(master, termios.TIOCSWINSZ, WINDOW_SIZE)
         self.master = master
+        self.pid = pid
+        self.returncode: int | None = None
         self.transcript = bytearray()
-        self.process = subprocess.Popen(
-            [pwsh, "-NoLogo", "-NoProfile"],
-            cwd=os.path.dirname(manifest),
-            env=environment,
-            stdin=slave,
-            stdout=slave,
-            stderr=slave,
-            close_fds=True,
-            start_new_session=True,
-        )
-        os.close(slave)
+
+    def poll(self) -> int | None:
+        if self.returncode is not None:
+            return self.returncode
+        child, status = os.waitpid(self.pid, os.WNOHANG)
+        if child == 0:
+            return None
+        self.returncode = os.waitstatus_to_exitcode(status)
+        return self.returncode
+
+    def wait(self, timeout: float) -> int:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.poll()
+            if result is not None:
+                return result
+            time.sleep(0.05)
+        raise TimeoutError("等待 PowerShell 退出超时。")
 
     def send(self, value: str | bytes) -> None:
         data = value.encode("utf-8") if isinstance(value, str) else value
@@ -72,18 +91,22 @@ class Terminal:
                     raise
                 if chunk:
                     self.transcript.extend(chunk)
-            if self.process.poll() is not None:
+            if self.poll() is not None:
                 break
         raise RuntimeError(f"等待终端输出超时：{marker}\n{clean(self.transcript)}")
 
     def close(self) -> None:
         try:
-            if self.process.poll() is None:
+            if self.poll() is None:
                 self.send("exit\r")
-                self.process.wait(timeout=10)
-        except (OSError, subprocess.TimeoutExpired):
-            self.process.kill()
-            self.process.wait(timeout=5)
+                self.wait(10)
+        except (OSError, TimeoutError):
+            try:
+                if self.poll() is None:
+                    os.kill(self.pid, signal.SIGKILL)
+                self.wait(5)
+            except (ChildProcessError, ProcessLookupError, TimeoutError):
+                pass
         finally:
             os.close(self.master)
 
