@@ -116,6 +116,8 @@ try {
     Assert-Equal 'about_PSAITerminal' (Get-Help about_PSAITerminal -ErrorAction Stop).Name '发布包必须提供可发现的简体中文帮助主题。'
     $readme = Get-Content -LiteralPath (Join-Path $moduleOutput 'README.md') -Raw
     Assert-Match $readme '\| Windows \| `<Documents>/PowerShell/PSAITerminal` \| `%LOCALAPPDATA%/PowerShell/PSAITerminal` \|' 'Windows 文档必须使用实际的 PSAITerminal 配置目录名。'
+    Assert-True $readme.Contains("当前 ``$releaseVersion`` 发布仅支持并验收 Windows") '文档必须明确当前版本只支持并验收 Windows。'
+    Assert-Equal $false $readme.Contains('适用于 Windows、Linux 和 macOS') '文档不能把未验收的平台列为当前支持范围。'
     Assert-Match $readme '不是自动回滚功能' '文档必须明确说明 AI 的回滚提示不会自动恢复系统状态。'
 
     $credentialTarget = 'PSAITerminal/Test/' + [guid]::NewGuid().ToString('N')

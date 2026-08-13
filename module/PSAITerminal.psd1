@@ -5,7 +5,7 @@
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
     Copyright = '(c) 2026 LXT. MIT License.'
-    Description = '适用于官方 PowerShell 的本地 AI 终端模块。'
+    Description = '适用于 Windows 官方 PowerShell 的本地 AI 终端模块。'
     PowerShellVersion = '7.4'
     CompatiblePSEditions = @('Core')
     RequiredAssemblies = @('bin/PSAITerminal.dll')
@@ -29,10 +29,10 @@
     AliasesToExport = @('Configure-PSAI')
     PrivateData = @{
         PSData = @{
-            Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine')
+            Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '0.5.2：修复 PSReadLine 快捷键卸载参数，完善安全说明、跨平台 CI 和发布校验。'
+            ReleaseNotes = '0.5.2：修复 PSReadLine 快捷键卸载参数，完善安全说明、Windows CI 和发布校验。'
         }
     }
 }
