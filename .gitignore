@@ -1,0 +1,11 @@
+bin/
+obj/
+out/
+TestResults/
+*.user
+*.nupkg
+.codegraph/
+.tmp-pssa/
+__pycache__/
+*.py[cod]
+HANDOFF.md

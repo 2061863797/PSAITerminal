@@ -1,0 +1,51 @@
+TOPIC
+    about_PSAITerminal
+
+SHORT DESCRIPTION
+    Use local AI chat, command assistance, and multi-step Agent features in official PowerShell.
+
+PLATFORMS
+    PowerShell 7.4 or later on Windows, Linux, and macOS.
+
+GETTING STARTED
+    Type ai and press Enter to open settings, add a model, and select it.
+    Type ai <question> to ask the active model explicitly in any mode.
+
+MODES
+    Off   Enter always executes PowerShell normally.
+    AI    Enter sends input to the active AI model.
+    Auto  Deterministic PowerShell commands run directly; natural-language or failed commands go to AI.
+
+LANGUAGE
+    The default interface language is English. Type ai, select Language / 语言,
+    and choose English or Chinese (简体中文). The choice is persisted.
+
+SHORTCUTS
+    F2    Send the current input to AI without pressing Enter first.
+    F3    Execute the current input as PowerShell without pressing Enter first.
+    F6    Cycle Off, AI, and Auto.
+    F7    Explain the most recent command and its result.
+    On some laptops, hold Fn together with the function key.
+
+DIAGNOSTICS
+    Test-PSAIConfiguration checks installation, configuration, credentials, endpoint,
+    PSReadLine, and shortcut integration.
+    Test-PSAIConfiguration -Online sends one minimal model request after local checks.
+
+COMMON COMMANDS
+    Get-PSAIModel
+    Get-PSAISession
+    Get-PSAIRun
+    Set-PSAITerminalMode Off|AI|Auto
+
+SAFETY CONFIRMATION
+    AI-generated purpose, expected-result, and side-effect descriptions may be inaccurate.
+    Treat the complete command shown on the approval screen as authoritative.
+    High-risk commands have no Enter-to-execute default and require a second confirmation.
+    Approval is bound to the command digest and Run revision; changes require reapproval.
+    Commands run with the current user's permissions in the current PowerShell session, not a sandbox.
+
+NOTES
+    No model is bundled. The first installation starts in Off mode and does not connect automatically.
+    API keys are never written to JSON. Windows uses Credential Manager, macOS uses Keychain,
+    and Linux uses Secret Service. If the platform store is unavailable, SessionOnly can be selected.

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>PSAITerminal</AssemblyName>
+    <RootNamespace>PSAITerminal</RootNamespace>
+    <Version>0.5.2</Version>
+    <AssemblyVersion>0.5.2.0</AssemblyVersion>
+    <Description>适用于官方 PowerShell 的本地 AI 终端模块。</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management.Automation" Version="7.4.0">
+      <PrivateAssets>all</PrivateAssets>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

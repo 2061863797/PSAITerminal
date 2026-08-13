@@ -1,0 +1,170 @@
+name: 跨平台验证
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  POWERSHELL_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: Linux
+            os: ubuntu-latest
+          - name: macOS
+            os: macos-latest
+
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: 读取模块版本
+        shell: pwsh
+        run: |
+          $version = [string](Import-PowerShellDataFile ./module/PSAITerminal.psd1).ModuleVersion
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "模块版本格式无效：$version" }
+          "PSAI_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: 安装 PSScriptAnalyzer
+        shell: pwsh
+        run: Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Repository PSGallery -Scope CurrentUser -Force
+
+      - name: 检查 PowerShell 规范
+        shell: pwsh
+        run: |
+          $targets = @(
+            './build.ps1'
+            './Install-PSAITerminal.ps1'
+            './Uninstall-PSAITerminal.ps1'
+            './module/PSAITerminal.psd1'
+            './module/PSAITerminal.psm1'
+          )
+          $issues = foreach ($target in $targets) {
+            Invoke-ScriptAnalyzer -Path $target -Settings ./.psscriptanalyzer.psd1
+          }
+          if (@($issues).Count -gt 0) {
+            $issues | Format-Table RuleName,Severity,ScriptName,Line,Message -Wrap -AutoSize | Out-Host
+            throw "PSScriptAnalyzer 发现 $(@($issues).Count) 个问题。"
+          }
+
+      - name: 构建发布包
+        shell: pwsh
+        run: ./build.ps1 -Restore -Configuration Release -Package
+
+      - name: 运行完整回归
+        shell: pwsh
+        run: ./tests/run.ps1
+
+      - name: 检查 C# 格式
+        shell: pwsh
+        run: |
+          dotnet format ./src/PSAITerminal.csproj --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "核心项目格式检查失败：$LASTEXITCODE" }
+          dotnet format ./tools/InteractiveSmoke/InteractiveSmoke.csproj --verify-no-changes
+          if ($LASTEXITCODE -ne 0) { throw "ConPTY 项目格式检查失败：$LASTEXITCODE" }
+
+      - name: 检查脚本语法
+        shell: pwsh
+        run: |
+          $scripts = @(
+            './build.ps1'
+            './Install-PSAITerminal.ps1'
+            './Uninstall-PSAITerminal.ps1'
+            './module/PSAITerminal.psd1'
+            './module/PSAITerminal.psm1'
+            './tests/run.ps1'
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script), [ref]$tokens, [ref]$errors)
+            if (@($errors).Count -gt 0) { throw "PowerShell 语法检查失败：$script`n$($errors | Out-String)" }
+          }
+          $env:PYTHONDONTWRITEBYTECODE = '1'
+          python3 -c "import ast,pathlib; ast.parse(pathlib.Path('tools/UnixPtySmoke/pty_smoke.py').read_text(encoding='utf-8'))"
+          if ($LASTEXITCODE -ne 0) { throw "Python 语法检查失败：$LASTEXITCODE" }
+
+      - name: 验证 Windows ConPTY 交互
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet run --project ./tools/InteractiveSmoke/InteractiveSmoke.csproj `
+            --configuration Release -- `
+            (Get-Command pwsh).Source `
+            (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+
+      - name: 验证 Unix PTY 交互
+        if: runner.os != 'Windows'
+        shell: pwsh
+        run: |
+          python3 ./tools/UnixPtySmoke/pty_smoke.py `
+            (Get-Command pwsh).Source `
+            (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+
+      - name: 检查发布内容并生成校验和
+        shell: pwsh
+        run: |
+          $package = Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION"
+          $archive = Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION.zip"
+          $expected = @(
+            'PSAITerminal.psd1'
+            'PSAITerminal.psm1'
+            'bin/PSAITerminal.dll'
+            'README.md'
+            'CHANGELOG.md'
+            'LICENSE'
+            'Install-PSAITerminal.ps1'
+            'Uninstall-PSAITerminal.ps1'
+            'en-US/about_PSAITerminal.help.txt'
+            'zh-CN/about_PSAITerminal.help.txt'
+          ) | Sort-Object
+          $actual = Get-ChildItem -LiteralPath $package -Recurse -File | ForEach-Object {
+            $_.FullName.Substring($package.Path.Length + 1).Replace('\', '/')
+          } | Sort-Object
+          if (($expected -join "`n") -cne ($actual -join "`n")) {
+            throw "发布文件集合不正确。`n期望：$($expected -join ', ')`n实际：$($actual -join ', ')"
+          }
+          $manifest = Test-ModuleManifest (Join-Path $package 'PSAITerminal.psd1')
+          if ($manifest.Version -ne [version]$env:PSAI_VERSION) { throw "发布清单版本不一致：$($manifest.Version)" }
+          $assembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.dll'))
+          if ($assembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "程序集版本不一致：$($assembly.Version)" }
+          $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $archive
+          "$($hash.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($archive))" |
+            Set-Content -LiteralPath "./out/SHA256SUMS-$($env:RUNNER_OS).txt" -Encoding ascii
+
+      - name: 上传发布候选包
+        uses: actions/upload-artifact@v4
+        with:
+          name: PSAITerminal-${{ env.PSAI_VERSION }}-${{ runner.os }}
+          path: |
+            out/PSAITerminal-${{ env.PSAI_VERSION }}
+            out/PSAITerminal-${{ env.PSAI_VERSION }}.zip
+            out/SHA256SUMS-${{ runner.os }}.txt
+          if-no-files-found: error

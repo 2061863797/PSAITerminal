@@ -1,0 +1,53 @@
+主题
+    about_PSAITerminal
+
+简短说明
+    在官方 PowerShell 中使用本地 AI 问答、命令建议和多步骤 Agent。
+
+平台
+    支持 Windows、Linux 和 macOS 上的 PowerShell 7.4 及以上版本。
+
+开始使用
+    输入 ai 并按 Enter，新增并选择模型。
+
+    输入 ai <问题> 并按 Enter，可在任何模式下明确询问 AI。
+
+模式
+    Off   Enter 始终按 PowerShell 执行。
+    AI    Enter 始终交给 AI。
+    Auto  明确的命令先执行；无法运行时把原始输入交给 AI。
+
+界面语言
+    默认界面语言为 English。输入 ai，选择“语言 / Language”即可切换 English 或简体中文；语言选择会持久化。
+
+快捷键
+    F2    先输入内容，不按 Enter，按 F2 强制交给 AI。
+    F3    先输入命令，不按 Enter，按 F3 强制按 PowerShell 执行。
+    F6    切换 Off、AI、Auto。
+    F7    解释最近一次命令及其结果。
+
+    部分笔记本需要同时按 Fn。运行 Get-PSAIIntegrationStatus 可以确认快捷键是否启用。
+
+诊断
+    Test-PSAIConfiguration
+        检查安装位置、配置、凭据、接口地址、PSReadLine 和快捷键。
+
+    Test-PSAIConfiguration -Online
+        在本地检查之外发送一次最小模型请求。
+
+常用命令
+    Get-PSAIModel
+    Get-PSAISession
+    Get-PSAIRun
+    Set-PSAITerminalMode Off|AI|Auto
+
+安全确认
+    AI 生成的目的、预期和副作用可能不准确，请以确认界面显示的完整命令为准。
+    高风险命令不支持回车默认执行，并要求第二次明确确认。
+    批准与命令摘要和 Run 修订号绑定；命令、风险或并发状态变化后必须重新批准。
+    命令使用当前用户权限在当前 PowerShell 会话中执行，不是隔离沙箱。
+
+说明
+    PSAITerminal 不预置模型，首次安装默认为 Off，也不会自动联网。
+    API Key 不写入 JSON 配置。Windows 使用 Credential Manager，macOS 使用 Keychain，
+    Linux 使用 Secret Service；密钥库不可用时可显式选择仅当前会话使用。
