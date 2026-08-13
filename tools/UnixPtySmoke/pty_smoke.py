@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import os
 import pty
 import re
 import select
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 
@@ -30,6 +33,8 @@ def clean(value: bytes) -> str:
 class Terminal:
     def __init__(self, pwsh: str, manifest: str, state_root: str) -> None:
         master, slave = pty.openpty()
+        # GitHub Runner 创建的 PTY 可能默认为 0×0，PSReadLine 渲染时会因此除零。
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         environment = os.environ.copy()
         environment["TERM"] = "xterm-256color"
         environment["PSAI_CONFIG_HOME"] = os.path.join(state_root, "config")
