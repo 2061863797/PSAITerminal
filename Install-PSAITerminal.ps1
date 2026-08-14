@@ -1,7 +1,9 @@
-#requires -Version 7.4
+﻿#requires -Version 5.1
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
+    [ValidateSet('Current','WindowsPowerShell','PowerShell','Both')]
+    [string]$TargetHost = 'Current',
     [string]$ModuleRoot,
     [string]$ProfilePath,
     [switch]$NoProfileIntegration,
@@ -13,54 +15,84 @@ $ErrorActionPreference = 'Stop'
 if ($NoProfileIntegration -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
     throw '-NoProfileIntegration 与 -ProfilePath 不能同时使用。'
 }
+if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 0.6.0 仅支持 Windows。' }
+if ($TargetHost -eq 'Both' -and (-not [string]::IsNullOrWhiteSpace($ModuleRoot) -or -not [string]::IsNullOrWhiteSpace($ProfilePath))) {
+    throw '-TargetHost Both 不能与 -ModuleRoot 或 -ProfilePath 同时使用。'
+}
 
-$script:PathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if ($env:PSAI_TEST_DOCUMENTS_HOME -and $env:PSAI_TEST_MODE -ne '1') {
+    throw 'PSAI_TEST_DOCUMENTS_HOME 只能在 PSAI_TEST_MODE=1 的隔离测试中使用。'
+}
+$script:DocumentsRoot = if ($env:PSAI_TEST_DOCUMENTS_HOME) {
+    [IO.Path]::GetFullPath($env:PSAI_TEST_DOCUMENTS_HOME)
+} else { [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments) }
+
+if ($TargetHost -eq 'Both') {
+    $results = foreach ($hostTarget in @('WindowsPowerShell','PowerShell')) {
+        $arguments = @{ TargetHost=$hostTarget; NoProfileIntegration=$NoProfileIntegration; Force=$Force; Confirm=$false }
+        if ($WhatIfPreference) { $arguments.WhatIf = $true }
+        & $PSCommandPath @arguments
+    }
+    return $results
+}
+
+$script:ResolvedTargetHost = if ($TargetHost -eq 'Current') {
+    if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
+} else { $TargetHost }
+
+$script:PathComparison = [StringComparison]::OrdinalIgnoreCase
 $script:DirectorySeparator = [IO.Path]::DirectorySeparatorChar
 
 function ConvertTo-PSAINormalizedPath([string]$Path) {
     [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
 }
 
+function Test-PSAIPathFullyQualified([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    [IO.Path]::GetFullPath($Path) -eq $Path -or $Path -match '^[A-Za-z]:[\\/]'
+}
+
 function Resolve-PSAIUserModuleRoot([string]$RequestedRoot) {
-    $candidates = if ($RequestedRoot) { @($RequestedRoot) }
-        else { @($env:PSModulePath -split [IO.Path]::PathSeparator) }
-    $systemCandidates = @($PSHOME, $env:ProgramFiles, $env:windir)
-    if (-not $IsWindows) { $systemCandidates += @('/usr/local/share/powershell/Modules','/usr/share/powershell/Modules') }
-    $systemRoots = $systemCandidates |
-        Where-Object { $_ } |
-        ForEach-Object { (ConvertTo-PSAINormalizedPath $_) + $script:DirectorySeparator }
-
-    foreach ($candidate in $candidates) {
-        if ([string]::IsNullOrWhiteSpace($candidate) -or -not [IO.Path]::IsPathFullyQualified($candidate)) { continue }
-        $fullPath = ConvertTo-PSAINormalizedPath $candidate
-        $systemPath = $false
-        foreach ($root in $systemRoots) {
-            if (($fullPath + $script:DirectorySeparator).StartsWith($root, $script:PathComparison)) {
-                $systemPath = $true
-                break
-            }
-        }
-        if (-not $systemPath) { return $fullPath }
+    $candidate = if ($RequestedRoot) { $RequestedRoot } else {
+        Join-Path $script:DocumentsRoot "$script:ResolvedTargetHost\Modules"
     }
-
-    throw '没有找到当前用户可用的 PowerShell 模块目录。请通过 -ModuleRoot 指定用户模块目录。'
+    if (-not (Test-PSAIPathFullyQualified $candidate)) { throw "模块根目录必须是完整路径：$candidate" }
+    $fullPath = ConvertTo-PSAINormalizedPath $candidate
+    $rootPath = [IO.Path]::GetPathRoot($fullPath).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    if ($fullPath.Equals($rootPath, $script:PathComparison)) { throw "拒绝使用磁盘根目录作为模块根：$fullPath" }
+    foreach ($protectedPath in @($PSHOME,$env:ProgramFiles,[Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),$env:windir)) {
+        if (-not $protectedPath) { continue }
+        $protectedRoot = (ConvertTo-PSAINormalizedPath $protectedPath) + $script:DirectorySeparator
+        if (($fullPath + $script:DirectorySeparator).StartsWith($protectedRoot, $script:PathComparison)) {
+            throw "拒绝使用系统目录作为模块根：$fullPath"
+        }
+    }
+    $fullPath
 }
 
 function Write-PSAIUtf8FileAtomically([string]$Path, [string]$Content) {
     $directory = Split-Path -Parent $Path
     if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
     $temporaryPath = "$Path.tmp.$([guid]::NewGuid().ToString('N'))"
+    $replacementBackup = "$Path.replace-backup.$([guid]::NewGuid().ToString('N'))"
     try {
-        [IO.File]::WriteAllText($temporaryPath, $Content, [Text.UTF8Encoding]::new($false))
-        [IO.File]::Move($temporaryPath, $Path, $true)
+        [IO.File]::WriteAllText($temporaryPath, $Content, (New-Object Text.UTF8Encoding($true)))
+        if (Test-Path -LiteralPath $Path) {
+            [IO.File]::Replace($temporaryPath, $Path, $replacementBackup)
+            Remove-Item -LiteralPath $replacementBackup -Force
+        }
+        else { [IO.File]::Move($temporaryPath, $Path) }
     } finally {
         if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
+        if (Test-Path -LiteralPath $replacementBackup) { Remove-Item -LiteralPath $replacementBackup -Force }
     }
 }
 
 function Resolve-PSAIProfilePath([string]$RequestedPath) {
-    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) { [string]$PROFILE.CurrentUserCurrentHost } else { $RequestedPath }
-    if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathFullyQualified($path) -or
+    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+        Join-Path $script:DocumentsRoot "$script:ResolvedTargetHost\Microsoft.PowerShell_profile.ps1"
+    } else { $RequestedPath }
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-PSAIPathFullyQualified $path) -or
         [IO.Path]::GetExtension($path) -ne '.ps1') {
         throw 'Profile 路径必须是完整的 .ps1 文件路径。'
     }
@@ -140,7 +172,7 @@ function Get-PSAIProfileUpdate([string]$Content, [AllowNull()][string]$Block) {
 
 function Test-PSAIPackageMatch([string]$Left, [string]$Right) {
     $expectedFiles = @(
-        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'bin/PSAITerminal.dll',
+        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'bin/PSAITerminal.dll', 'bin/PSAITerminal.PowerShell7.dll',
         'README.md', 'CHANGELOG.md', 'LICENSE', 'Install-PSAITerminal.ps1', 'Uninstall-PSAITerminal.ps1',
         'zh-CN/about_PSAITerminal.help.txt', 'en-US/about_PSAITerminal.help.txt')
     foreach ($relativePath in $expectedFiles) {
@@ -165,6 +197,7 @@ $requiredSourceFiles = @(
     $sourceManifest,
     (Join-Path $PSScriptRoot 'PSAITerminal.psm1'),
     (Join-Path $PSScriptRoot 'bin/PSAITerminal.dll'),
+    (Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll'),
     (Join-Path $PSScriptRoot 'README.md'),
     (Join-Path $PSScriptRoot 'CHANGELOG.md'),
     (Join-Path $PSScriptRoot 'LICENSE'),
@@ -199,6 +232,7 @@ try {
         }
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/PSAITerminal.dll') -Destination (Join-Path $stage 'bin/PSAITerminal.dll') -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll') -Destination (Join-Path $stage 'bin/PSAITerminal.PowerShell7.dll') -Force
     foreach ($helpCulture in @('zh-CN','en-US')) {
         $helpSource = Join-Path $PSScriptRoot $helpCulture
         if (Test-Path -LiteralPath $helpSource -PathType Container) {
@@ -224,8 +258,10 @@ if (-not (Get-Command Get-PSAIIntegrationStatus -ErrorAction SilentlyContinue)) 
     throw '发布包未导出必要的诊断命令。'
 }
 '@
-        [IO.File]::WriteAllText($verifyScript, $verifyScriptContent, [Text.UTF8Encoding]::new($false))
-        $pwshPath = (Get-Process -Id $PID).Path
+        [IO.File]::WriteAllText($verifyScript, $verifyScriptContent, (New-Object Text.UTF8Encoding($true)))
+        $pwshPath = if ($script:ResolvedTargetHost -eq 'WindowsPowerShell') {
+            Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
         & $pwshPath -NoLogo -NoProfile -NonInteractive -File $verifyScript `
             -ManifestPath (Join-Path $stage 'PSAITerminal.psd1') `
             -ConfigPath (Join-Path $verifyRoot 'config') `

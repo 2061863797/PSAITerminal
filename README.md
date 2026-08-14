@@ -2,24 +2,32 @@
 
 [![CI](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml/badge.svg)](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml)
 
-适用于 Windows 上官方 PowerShell 7.4 及以上版本的本地 AI 终端模块。无需修改或重新编译 PowerShell。
+适用于 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上版本的本地 AI 终端模块。
 
-当前 `0.5.2` 发布仅支持并验收 Windows。源码中保留的 Linux/macOS 适配代码尚未纳入当前发布保证或 CI 门禁，请勿将其视为受支持平台。
+当前 `0.6.0` 发布仅支持 Windows PowerShell 5.1（x64/x86）与 PowerShell 7.4 及以上版本。Linux/macOS 实现已移除，不属于构建、测试或发布范围。
+
+当前发布未做 Authenticode 代码签名。安装前请从 GitHub Release 或 PowerShell Gallery 获取包并核对 SHA256；若本机策略阻止未签名脚本，只对该次安装进程使用 `-ExecutionPolicy Bypass`，不要永久放宽系统策略。
 
 ## 安装
 
 在解压后的发布目录中运行：
 
 ```powershell
-pwsh -NoProfile -File ./Install-PSAITerminal.ps1
+.\Install-PSAITerminal.ps1
 ```
 
-安装器会使用**当前这个 PowerShell 进程**的用户模块目录，检查发布包，并写入自动加载配置。安装完成后关闭并重新打开 PowerShell。
+默认 `-TargetHost Current`，只安装到当前宿主。也可选择 `WindowsPowerShell`、`PowerShell` 或 `Both`；`Both` 分别安装到 `<Documents>\WindowsPowerShell\Modules` 与 `<Documents>\PowerShell\Modules`。它不能与 `-ModuleRoot` 或 `-ProfilePath` 同时使用。
+
+例如，从 PowerShell 7 同时安装两个宿主：
+
+```powershell
+pwsh -NoProfile -File .\Install-PSAITerminal.ps1 -TargetHost Both
+```
 
 如果不希望自动加载：
 
 ```powershell
-pwsh -NoProfile -File ./Install-PSAITerminal.ps1 -NoProfileIntegration
+.\Install-PSAITerminal.ps1 -TargetHost Both -NoProfileIntegration
 ```
 
 如果系统重定向了用户目录，或要给指定 Host 写入 Profile，可明确指定两条路径。以下是 Windows 示例：
@@ -57,6 +65,8 @@ Test-PSAIConfiguration
 ```
 
 `Off`：Enter 始终按 PowerShell 执行。`AI`：Enter 始终交给 AI。`Auto`：明确的 PowerShell 命令先执行；命令无法运行时，模块会把原始输入交给 AI。
+
+Windows PowerShell 5.1 不提供 PowerShell 7 专属的原生预测器/反馈 API，因此 `Get-PSAIIntegrationStatus` 会显示“宿主不支持”；模型、会话、安全审批、输入路由和快捷键不受影响。`Enable/Disable-PSAIPredictor` 在 5.1 中会明确拒绝且不会改写共享配置。
 
 ## 模型
 
@@ -96,7 +106,7 @@ ai resume <RunId>
 卸载请在未加载模块的新进程中运行发布包内的脚本：
 
 ```powershell
-pwsh -NoProfile -File ./Uninstall-PSAITerminal.ps1
+.\Uninstall-PSAITerminal.ps1 -TargetHost Current
 ```
 
 卸载默认保留模型配置、凭据和会话数据。

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Debug',
@@ -10,10 +10,11 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $projectFile = Join-Path $projectRoot 'src/PSAITerminal.csproj'
+$powerShell7ProjectFile = Join-Path $projectRoot 'src/PowerShell7/PSAITerminal.PowerShell7.csproj'
 $sourceManifest = Join-Path $projectRoot 'module/PSAITerminal.psd1'
 $releaseVersion = ([version](Import-PowerShellDataFile -LiteralPath $sourceManifest).ModuleVersion).ToString()
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = "out/PSAITerminal-$releaseVersion" }
-$pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+$pathComparison = [StringComparison]::OrdinalIgnoreCase
 $separator = [IO.Path]::DirectorySeparatorChar
 $releaseParent = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out')).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
 $outputRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot $OutputDirectory)).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
@@ -29,14 +30,19 @@ $previousRoot = $null
 if ($Restore) {
     dotnet restore $projectFile
     if ($LASTEXITCODE -ne 0) { throw "依赖恢复失败，退出码：$LASTEXITCODE" }
+    dotnet restore $powerShell7ProjectFile
+    if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成依赖恢复失败，退出码：$LASTEXITCODE" }
 }
 
 try {
     dotnet build $projectFile --configuration $Configuration --no-restore
     if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码：$LASTEXITCODE" }
+    dotnet build $powerShell7ProjectFile --configuration $Configuration --no-restore
+    if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成编译失败，退出码：$LASTEXITCODE" }
 
     New-Item -ItemType Directory -Path $binaryDirectory -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $projectRoot "src/bin/$Configuration/net8.0/PSAITerminal.dll") -Destination $binaryDirectory -Force
+    Copy-Item -LiteralPath (Join-Path $projectRoot "src/bin/$Configuration/netstandard2.0/PSAITerminal.dll") -Destination $binaryDirectory -Force
+    Copy-Item -LiteralPath (Join-Path $projectRoot "src/PowerShell7/bin/$Configuration/net8.0/PSAITerminal.PowerShell7.dll") -Destination $binaryDirectory -Force
     $publishFiles = [ordered]@{
         'module/PSAITerminal.psd1' = 'PSAITerminal.psd1'
         'module/PSAITerminal.psm1' = 'PSAITerminal.psm1'
@@ -63,6 +69,8 @@ try {
     if ($manifest.Version -ne [version]$releaseVersion) { throw "发布清单版本不正确：$($manifest.Version)" }
     $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.dll')).Version
     if ($assemblyVersion -ne [version]"$releaseVersion.0") { throw "程序集版本不正确：$assemblyVersion" }
+    $integrationAssemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.PowerShell7.dll')).Version
+    if ($integrationAssemblyVersion -ne [version]"$releaseVersion.0") { throw "PowerShell 7 集成程序集版本不正确：$integrationAssemblyVersion" }
 
     if (Test-Path -LiteralPath $outputRoot) {
         if (-not (Test-Path -LiteralPath $outputRoot -PathType Container)) { throw "输出路径不是目录：$outputRoot" }
@@ -81,6 +89,21 @@ try {
         if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
         Compress-Archive -LiteralPath $outputRoot -DestinationPath $archive
         Write-Host "发布包已生成：$archive"
+        $compressCommand = Get-Command Compress-PSResource -ErrorAction SilentlyContinue
+        if (-not $compressCommand) { throw '缺少 Compress-PSResource。请安装 Microsoft.PowerShell.PSResourceGet 1.2.0 或更高版本。' }
+        $galleryStage = Join-Path $outputParent ('.gallery-' + [guid]::NewGuid().ToString('N'))
+        $galleryModuleRoot = Join-Path $galleryStage 'PSAITerminal'
+        $galleryPackage = Join-Path $outputParent "PSAITerminal.$releaseVersion.nupkg"
+        try {
+            [IO.Directory]::CreateDirectory($galleryStage) | Out-Null
+            Copy-Item -LiteralPath $outputRoot -Destination $galleryModuleRoot -Recurse
+            if (Test-Path -LiteralPath $galleryPackage) { Remove-Item -LiteralPath $galleryPackage -Force }
+            Compress-PSResource -Path $galleryModuleRoot -DestinationPath $outputParent
+            if (-not (Test-Path -LiteralPath $galleryPackage -PathType Leaf)) { throw "Gallery 包未生成：$galleryPackage" }
+            Write-Host "Gallery 包已生成：$galleryPackage"
+        } finally {
+            if (Test-Path -LiteralPath $galleryStage) { Remove-Item -LiteralPath $galleryStage -Recurse -Force }
+        }
     }
 } catch {
     if (-not (Test-Path -LiteralPath $outputRoot) -and $previousRoot -and (Test-Path -LiteralPath $previousRoot)) {

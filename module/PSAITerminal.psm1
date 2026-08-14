@@ -1,6 +1,24 @@
-Set-StrictMode -Version 3.0
+﻿Set-StrictMode -Version 3.0
 
 $script:ModuleName = 'PSAITerminal'
+$script:HostEdition = if ($PSVersionTable.PSEdition) { [string]$PSVersionTable.PSEdition } else { 'Desktop' }
+$script:HostVersion = [version]$PSVersionTable.PSVersion
+$script:IsWindowsPlatform = $env:OS -eq 'Windows_NT'
+$script:OfficialIntegrationAvailable = $false
+if (-not $script:IsWindowsPlatform) {
+    throw 'PSAITerminal 0.6.0 仅支持 Windows。'
+}
+if ($script:HostEdition -eq 'Core') {
+    if ($script:HostVersion -lt [version]'7.4') {
+        throw "PSAITerminal 在 PowerShell Core 中要求 7.4 或更高版本；当前为 $script:HostVersion。"
+    }
+    $integrationAssemblyPath = Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll'
+    if (-not (Test-Path -LiteralPath $integrationAssemblyPath -PathType Leaf)) {
+        throw "PowerShell 7 集成程序集不存在：$integrationAssemblyPath"
+    }
+    [void][Reflection.Assembly]::LoadFrom($integrationAssemblyPath)
+    $script:OfficialIntegrationAvailable = $true
+}
 $script:ValidModes = @('Off', 'AI', 'Auto')
 $script:ValidProtocols = @('Anthropic', 'OpenAIChat', 'OpenAIResponses', 'GeminiNative', 'Ollama')
 $script:SessionSecrets = @{}
@@ -30,6 +48,29 @@ $script:MaximumConfigBytes = 1MB
 $script:MaximumSessionBytes = 16MB
 $script:MaximumRunBytes = 4MB
 $script:FileLockTimeoutMilliseconds = 10000
+
+function Invoke-AIOfficialAddPrediction([string]$Command) {
+    if ($script:OfficialIntegrationAvailable) {
+        [PSAITerminal.AITerminalOfficialIntegration]::AddPrediction($Command)
+    }
+}
+
+function Get-AIOfficialFeedback {
+    if ($script:OfficialIntegrationAvailable) {
+        return [PSAITerminal.AITerminalOfficialIntegration]::GetLastFeedback()
+    }
+    $null
+}
+
+function Test-AIOfficialPredictorRegistered {
+    if (-not $script:OfficialIntegrationAvailable) { return $false }
+    [bool][PSAITerminal.AITerminalOfficialIntegration]::PredictorRegistered
+}
+
+function Test-AIOfficialFeedbackRegistered {
+    if (-not $script:OfficialIntegrationAvailable) { return $false }
+    [bool][PSAITerminal.AITerminalOfficialIntegration]::FeedbackRegistered
+}
 
 function Get-AILanguage {
     if ($script:Config -and [string]$script:Config.language -in @('en-US','zh-CN')) {
@@ -198,15 +239,51 @@ function Unregister-AIPromptIntegration {
 function Get-AIUserHomeDirectory {
     $path = [Environment]::GetFolderPath('UserProfile')
     if ([string]::IsNullOrWhiteSpace($path)) { $path = $HOME }
-    if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathFullyQualified($path)) {
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-AIPathFullyQualified $path)) {
         throw '无法确定当前用户主目录。'
     }
     [IO.Path]::GetFullPath($path)
 }
 
+function Test-AIPathFullyQualified([AllowNull()][string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        if ($Path -match '^[A-Za-z]:[\\/]') { return $true }
+        if ($Path -match '^[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$)') { return $true }
+        if ($Path -match '^\\\\\?\\(?:[A-Za-z]:\\|UNC\\[^\\]+\\[^\\]+(?:\\|$))') { return $true }
+    } catch { return $false }
+    $false
+}
+
+function ConvertTo-AIJsonMap([AllowNull()]$Value) {
+    if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return $Value }
+    if ($Value -is [Collections.IDictionary]) {
+        $map = [ordered]@{}
+        foreach ($key in $Value.Keys) { $map[[string]$key] = ConvertTo-AIJsonMap $Value[$key] }
+        return ,$map
+    }
+    if ($Value -is [Collections.IEnumerable]) {
+        $items = @()
+        foreach ($item in $Value) { $items += ,(ConvertTo-AIJsonMap $item) }
+        return ,$items
+    }
+    $properties = @($Value.PSObject.Properties | Where-Object { $_.MemberType -in @('NoteProperty','Property') })
+    if ($Value -is [pscustomobject] -or $properties.Count -gt 0) {
+        $map = [ordered]@{}
+        foreach ($property in $properties) { $map[$property.Name] = ConvertTo-AIJsonMap $property.Value }
+        return ,$map
+    }
+    $Value
+}
+
+function ConvertFrom-AIJson([Parameter(Mandatory)][string]$Json) {
+    $parsed = $Json | ConvertFrom-Json -ErrorAction Stop
+    ConvertTo-AIJsonMap $parsed
+}
+
 function Resolve-AIStorageOverride([string]$Value, [string]$VariableName) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-    if (-not [IO.Path]::IsPathFullyQualified($Value)) {
+    if (-not (Test-AIPathFullyQualified $Value)) {
         throw "$VariableName 必须是完整的绝对路径。"
     }
     [IO.Path]::GetFullPath($Value)
@@ -215,24 +292,13 @@ function Resolve-AIStorageOverride([string]$Value, [string]$VariableName) {
 function Get-AIConfigDirectory {
     $override = Resolve-AIStorageOverride $env:PSAI_CONFIG_HOME 'PSAI_CONFIG_HOME'
     if ($override) { return $override }
-    if ($IsWindows) { return Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell/PSAITerminal' }
-    $base = if ($env:XDG_CONFIG_HOME -and [IO.Path]::IsPathFullyQualified($env:XDG_CONFIG_HOME)) {
-        $env:XDG_CONFIG_HOME
-    } else { Join-Path (Get-AIUserHomeDirectory) '.config' }
-    Join-Path $base 'powershell/AITerminal'
+    Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'PowerShell/PSAITerminal'
 }
 
 function Get-AIDataDirectory {
     $override = Resolve-AIStorageOverride $env:PSAI_DATA_HOME 'PSAI_DATA_HOME'
     if ($override) { return $override }
-    if ($IsWindows) { return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PowerShell/PSAITerminal' }
-    if ($IsMacOS -and -not ($env:XDG_DATA_HOME -and [IO.Path]::IsPathFullyQualified($env:XDG_DATA_HOME))) {
-        return Join-Path (Get-AIUserHomeDirectory) 'Library/Application Support/powershell/AITerminal'
-    }
-    $base = if ($env:XDG_DATA_HOME -and [IO.Path]::IsPathFullyQualified($env:XDG_DATA_HOME)) {
-        $env:XDG_DATA_HOME
-    } else { Join-Path (Get-AIUserHomeDirectory) '.local/share' }
-    Join-Path $base 'powershell/AITerminal'
+    Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'PowerShell/PSAITerminal'
 }
 
 function New-AIDefaultConfig {
@@ -294,8 +360,7 @@ function Get-AIStoredRevision([string]$Path, [string]$Label, [int]$MaximumBytes)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return -1L }
     $file = Get-Item -LiteralPath $Path -ErrorAction Stop
     if ($file.Length -gt $MaximumBytes) { throw "${Label}文件超过 $MaximumBytes 字节上限。" }
-    $stored = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop |
-        ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $stored = ConvertFrom-AIJson (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop)
     if ($stored -isnot [Collections.IDictionary]) { throw "${Label}文件根节点无效。" }
     Get-AIRevision $stored $Label
 }
@@ -506,8 +571,7 @@ function Initialize-AIState {
         [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($script:ConfigPath)
         $configFile = Get-Item -LiteralPath $script:ConfigPath -ErrorAction Stop
         if ($configFile.Length -gt 1MB) { throw '配置文件超过 1 MiB 上限。' }
-        $loaded = Get-Content -LiteralPath $script:ConfigPath -Raw -ErrorAction Stop |
-            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        $loaded = ConvertFrom-AIJson (Get-Content -LiteralPath $script:ConfigPath -Raw -ErrorAction Stop)
         $script:Config = Merge-AIConfig $loaded
     } catch {
         $script:ConfigLoadFailed = $true
@@ -558,7 +622,7 @@ function Save-AIConfig {
 }
 
 function Copy-AIConfig {
-    $script:Config | ConvertTo-Json -Depth 30 | ConvertFrom-Json -AsHashtable
+    ConvertFrom-AIJson ($script:Config | ConvertTo-Json -Depth 30)
 }
 
 function Invoke-AIConfigMutation([scriptblock]$Mutation) {
@@ -630,7 +694,7 @@ function Import-AISession([string]$Id) {
         [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($path)
         $sessionFile = Get-Item -LiteralPath $path -ErrorAction Stop
         if ($sessionFile.Length -gt 16MB) { throw '会话文件超过 16 MiB 上限。' }
-        $session = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        $session = ConvertFrom-AIJson (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
         Assert-AIIntegerValue $session.schemaVersion 1 1 '会话版本'
         $session.revision = Get-AIRevision $session '会话'
         if ([string]$session.id -ne $Id -or $session.id -notmatch '^[a-fA-F0-9]{32}$') { throw '会话 ID 不一致。' }
@@ -1159,7 +1223,7 @@ function Get-AIRemoteModels {
         if (-not $response.IsSuccessStatusCode) {
             throw "无法获取模型列表（HTTP $([int]$response.StatusCode)）：$safeBody"
         }
-        try { $payload = $body | ConvertFrom-Json -Depth 30 -ErrorAction Stop }
+        try { $payload = $body | ConvertFrom-Json -ErrorAction Stop }
         catch { throw "模型列表响应不是有效 JSON：$safeBody" }
 
         $entries = if ($Protocol -in @('Anthropic','OpenAIChat','OpenAIResponses')) {
@@ -1442,7 +1506,7 @@ function Invoke-AIModelText {
         foreach ($payload in (Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken)) {
             if (-not $payload) { continue }
             if ($payload -eq '[DONE]') { $terminal = $true; continue }
-            try { $chunk = $payload | ConvertFrom-Json -Depth 30 -ErrorAction Stop }
+            try { $chunk = $payload | ConvertFrom-Json -ErrorAction Stop }
             catch { throw "模型接口返回了无法解析的流数据：$(Protect-AIText $payload 1024)" }
             $parsed++
             $delta = $null
@@ -1673,7 +1737,7 @@ function Get-AIInteractiveSessionOnlyChoice([string]$Protocol) {
 }
 
 function Test-AISecretStoreException([Exception]$Exception) {
-    $Exception.Message -match '(?i)credential|keychain|secret service|secret-tool|keyring|密钥库|密钥环|登录会话|OSStatus'
+    $Exception.Message -match '(?i)credential|密钥库|凭据|登录会话'
 }
 
 function Add-AIModelInteractive {
@@ -1939,7 +2003,9 @@ function Open-PSAISettings {
         Write-Host ''
         Write-AIColoredHost (Get-AIText 'Settings') Magenta
         Write-Host (Get-AIText 'CurrentMode' @($script:Config.mode))
-        Write-Host (Get-AIText 'CurrentModel' @($script:Config.activeModel ?? $(if ((Get-AILanguage) -eq 'en-US') { 'Not configured' } else { '未配置' })))
+        $currentModelText = if ($script:Config.activeModel) { [string]$script:Config.activeModel }
+            elseif ((Get-AILanguage) -eq 'en-US') { 'Not configured' } else { '未配置' }
+        Write-Host (Get-AIText 'CurrentModel' @($currentModelText))
         Write-Host (Get-AIText 'ConfigPath' @($script:ConfigPath))
         Write-Host ''
         Write-Host "1. $(Get-AIText 'Models')"
@@ -2168,7 +2234,7 @@ function Import-AIRun([string]$Id) {
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($path)
     $runFile = Get-Item -LiteralPath $path -ErrorAction Stop
     if ($runFile.Length -gt 4MB) { throw 'Run 检查点超过 4 MiB 上限。' }
-    $run = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    $run = ConvertFrom-AIJson (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
     Assert-AIIntegerValue $run.schemaVersion 1 1 'Run 版本'
     $run.revision = Get-AIRevision $run 'Run'
     if ([string]$run.id -ne $Id -or $run.id -notmatch '^[a-fA-F0-9]{32}$' -or
@@ -2299,7 +2365,7 @@ function ConvertFrom-AIToolCall($Call) {
     if ([string](Get-AIProperty $Call 'name') -ne 'powershell') { throw '模型请求了未注册的工具。' }
     $arguments = Get-AIProperty $Call 'arguments'
     if ($arguments -isnot [Collections.IDictionary]) {
-        try { $arguments = ([string]$arguments) | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+        try { $arguments = ConvertFrom-AIJson ([string]$arguments) }
         catch { throw 'PowerShell 工具参数不是有效 JSON。' }
     }
     foreach ($field in @('purpose','command','expectedOutcome','sideEffects','rollbackHint')) {
@@ -2487,7 +2553,7 @@ function Complete-PSAIToolExecution {
         Command=[string]$proposal.command;Succeeded=$Succeeded;Output=$safeOutput
         Error=if($Succeeded){$null}else{$safeOutput};Source='AI';CompletedUtc=[DateTime]::UtcNow;RunId=$RunId;StepId=$StepId
     }
-    [PSAITerminal.AITerminalOfficialIntegration]::AddPrediction([string]$proposal.command)
+    Invoke-AIOfficialAddPrediction ([string]$proposal.command)
     Add-AISessionTurn 'tool' "命令：$($proposal.command)`n状态：$(if($Succeeded){'成功'}else{'失败'})`n输出：$safeOutput" 'tool_result' @{
         runId=$RunId;stepId=$StepId;succeeded=$Succeeded;command=[string]$proposal.command;output=$safeOutput
     } | Out-Null
@@ -2579,7 +2645,7 @@ function Invoke-PSAI {
 function Show-PSAIResultExplanation {
     [CmdletBinding()] param()
     Update-AILastSubmittedFromHistory
-    $feedback = [PSAITerminal.AITerminalOfficialIntegration]::GetLastFeedback()
+    $feedback = Get-AIOfficialFeedback
     if (-not $script:LastCommandResult -and -not $script:LastSubmittedCommand -and -not $feedback) {
         Write-Warning '当前会话还没有最近命令。'; return
     }
@@ -2831,10 +2897,21 @@ function Invoke-AIEnterHandler {
     [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
 }
 
+function Get-AIPSReadLineKeyHandler([string]$Key) {
+    $command = Get-Command Get-PSReadLineKeyHandler -ErrorAction SilentlyContinue
+    if (-not $command) { return $null }
+    if ($command.Parameters.ContainsKey('Chord')) {
+        return Get-PSReadLineKeyHandler -Chord $Key -ErrorAction SilentlyContinue
+    }
+    @(Get-PSReadLineKeyHandler -Bound -ErrorAction SilentlyContinue | Where-Object {
+        @([string]$_.Key -split ',\s*') -contains $Key
+    }) | Select-Object -First 1
+}
+
 function Set-AIPSAIKeyHandler([string]$Key, [string]$Description, [scriptblock]$Handler,
     [string[]]$ReplaceableFunctions, [switch]$Force) {
     if (-not $Key) { return $false }
-    $current = Get-PSReadLineKeyHandler -Chord $Key -ErrorAction SilentlyContinue
+    $current = Get-AIPSReadLineKeyHandler $Key
     if ($current -and $current.Function -notlike 'PSAI*' -and $current.Function -notin $ReplaceableFunctions -and -not $Force) {
         Write-Warning "快捷键 $Key 已由 '$($current.Function)' 使用，PSAITerminal 未覆盖。"
         return $false
@@ -2867,12 +2944,12 @@ $line = [Microsoft.PowerShell.PSConsoleReadLine]::ReadLine($host.Runspace, $Exec
     Set-Item -LiteralPath Function:\global:PSConsoleHostReadLine -Value $script:PSAIHostReadLine
 
     if ($script:ShortcutMigrated) {
-        $shiftEnter = Get-PSReadLineKeyHandler -Chord 'Shift+Enter'
+        $shiftEnter = Get-AIPSReadLineKeyHandler 'Shift+Enter'
         if (-not $shiftEnter -or $shiftEnter.Function -eq 'PSAIForceAI') {
             Set-PSReadLineKeyHandler -Key 'Shift+Enter' -Function AddLine
         }
         foreach ($legacyKey in @('Alt+A','Alt+S','Alt+M','Alt+E','Alt+Enter','Ctrl+Shift+I','Ctrl+Shift+E','Ctrl+Shift+,','Ctrl+Shift+M')) {
-            $legacyHandler = Get-PSReadLineKeyHandler -Chord $legacyKey
+            $legacyHandler = Get-AIPSReadLineKeyHandler $legacyKey
             if ($legacyHandler -and $legacyHandler.Function -like 'PSAI*') { Remove-PSReadLineKeyHandler -Chord $legacyKey }
         }
     }
@@ -2933,7 +3010,7 @@ $line = [Microsoft.PowerShell.PSConsoleReadLine]::ReadLine($host.Runspace, $Exec
 function Unregister-AIPSReadLineIntegration {
     if (-not $script:PSReadLineIntegrated) { return }
     foreach ($key in @($script:BoundKeys)) {
-        $current = Get-PSReadLineKeyHandler -Chord $key -ErrorAction SilentlyContinue
+        $current = Get-AIPSReadLineKeyHandler $key
         if (-not $current -or $current.Function -notlike 'PSAI*') { continue }
         $original = $script:OriginalKeyBindings[$key]
         if ($original) { Set-PSReadLineKeyHandler -Key $key -Function $original }
@@ -2963,6 +3040,9 @@ function Unregister-AIPSReadLineIntegration {
 
 function Enable-PSAIPredictor {
     [CmdletBinding()] param()
+    if (-not $script:OfficialIntegrationAvailable) {
+        throw '当前宿主不支持 PowerShell 预测器；请在 PowerShell 7.4 或更高版本中使用此功能。'
+    }
     Invoke-AIConfigMutation { $script:Config.integrations.predictor = $true }
     try {
         [PSAITerminal.AITerminalOfficialIntegration]::RegisterPredictor()
@@ -2975,6 +3055,9 @@ function Enable-PSAIPredictor {
 
 function Disable-PSAIPredictor {
     [CmdletBinding()] param()
+    if (-not $script:OfficialIntegrationAvailable) {
+        throw '当前宿主不支持 PowerShell 预测器；共享配置未被修改。'
+    }
     [PSAITerminal.AITerminalOfficialIntegration]::UnregisterPredictor()
     $script:PredictorEnabled = $false
     try { Invoke-AIConfigMutation { $script:Config.integrations.predictor = $false } }
@@ -2995,7 +3078,7 @@ function Get-AIShortcutStatus {
     foreach ($definition in $definitions) {
         $actual = $null
         try {
-            $handler = Get-PSReadLineKeyHandler -Chord $definition.Key -ErrorAction SilentlyContinue
+            $handler = Get-AIPSReadLineKeyHandler $definition.Key
             if ($handler) { $actual = [string]$handler.Function }
         } catch { Write-Verbose "无法检查快捷键 $($definition.Key)：$($_.Exception.Message)" }
         [pscustomobject]@{
@@ -3021,16 +3104,21 @@ function Get-PSAIIntegrationStatus {
     $shortcutText = ($shortcuts | ForEach-Object { '{0} {1}' -f $_.Key,$(if($_.Active){'✓'}else{'未启用'}) }) -join '；'
     $inputRouting = if (-not [bool]$script:Config.integrations.enterRouting) { '关闭' }
         elseif ($script:BoundKeys.Contains('Enter')) { '已启用' } else { '未启用' }
-    $prediction = if (-not [bool]$script:Config.integrations.predictor) { '关闭' }
-        elseif ([PSAITerminal.AITerminalOfficialIntegration]::PredictorRegistered) { '已启用' } else { '注册失败' }
+    $prediction = if (-not $script:OfficialIntegrationAvailable) { '宿主不支持' }
+        elseif (-not [bool]$script:Config.integrations.predictor) { '关闭' }
+        elseif (Test-AIOfficialPredictorRegistered) { '已启用' } else { '注册失败' }
     [pscustomobject]@{
         Version = $module.Version.ToString()
+        HostEdition = $script:HostEdition
+        HostVersion = $script:HostVersion.ToString()
+        OfficialIntegrationSupported = $script:OfficialIntegrationAvailable
         Mode = [string]$script:Config.mode
         Model = if ($script:Config.activeModel) { [string]$script:Config.activeModel } else { '未配置' }
         InputRouting = $inputRouting
         Shortcuts = $shortcutText
         Prediction = $prediction
-        FailureFeedback = if ([PSAITerminal.AITerminalOfficialIntegration]::FeedbackRegistered) { '已启用' } else { '未启用' }
+        FailureFeedback = if (-not $script:OfficialIntegrationAvailable) { '宿主不支持' }
+            elseif (Test-AIOfficialFeedbackRegistered) { '已启用' } else { '未启用' }
         ProfileAutoLoad = if (Test-AIProfileIntegration) { '已启用' } else { '未启用' }
         ModulePath = $module.Path
     }
@@ -3044,20 +3132,19 @@ function Test-PSAIConfiguration {
     }
 
     $module = $ExecutionContext.SessionState.Module
-    $platform = if ($IsWindows) { 'Windows' } elseif ($IsMacOS) { 'macOS' } elseif ($IsLinux) { 'Linux' } else { [Environment]::OSVersion.Platform.ToString() }
-    & $add '操作系统' $IsWindows $platform $(if($IsWindows){''}else{'当前发布仅支持 Windows'})
+    $platform = [Environment]::OSVersion.VersionString
+    & $add '操作系统' $script:IsWindowsPlatform $platform $(if($script:IsWindowsPlatform){''}else{'当前发布仅支持 Windows'})
+    & $add '官方预测/反馈集成' $(if($script:OfficialIntegrationAvailable){$true}else{$null}) $(if($script:OfficialIntegrationAvailable){'可用'}else{'当前宿主不支持（核心功能不受影响）'}) $(if($script:OfficialIntegrationAvailable){''}else{'如需此功能，请使用 PowerShell 7.4 或更高版本'})
     $secretStoreAvailable = [PSAITerminal.PlatformCredentialStore]::IsAvailable
     $secretStoreName = [PSAITerminal.PlatformCredentialStore]::BackendName
-    $secretStoreAction = if ($secretStoreAvailable) { '' }
-        elseif ($IsLinux) { '安装 libsecret-tools 并确认桌面 Secret Service 可用；或使用 -SessionOnly' }
-        else { '使用 -SessionOnly' }
+    $secretStoreAction = if ($secretStoreAvailable) { '' } else { '使用 -SessionOnly' }
     & $add '系统密钥库' $secretStoreAvailable $(if($secretStoreAvailable){$secretStoreName}else{"$secretStoreName 不可用，仅支持当前会话密钥"}) $secretStoreAction
     $moduleRoots = @($env:PSModulePath -split [IO.Path]::PathSeparator | Where-Object { $_ } | ForEach-Object {
         $moduleRoot = $_
         try { [IO.Path]::GetFullPath($moduleRoot).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar }
         catch { Write-Verbose "忽略无效的 PSModulePath 项 '$moduleRoot'：$($_.Exception.Message)" }
     })
-    $pathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $pathComparison = [StringComparison]::OrdinalIgnoreCase
     $moduleBaseWithSeparator = $module.ModuleBase.TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     $installed = @($moduleRoots | Where-Object { $moduleBaseWithSeparator.StartsWith($_,$pathComparison) }).Count -gt 0
     & $add '模块安装' $installed $(if($installed){'可按名称发现'}else{'当前是按路径临时导入'}) $(if($installed){''}else{'运行 Install-PSAITerminal.ps1'})
@@ -3086,7 +3173,10 @@ function Test-PSAIConfiguration {
         $success = if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { $null } else { [Nullable[bool]]$shortcut.Active }
         $details = if ($null -eq $success) { "$($shortcut.Key)（非交互环境未检查）" }
             elseif ($shortcut.Active) { "$($shortcut.Key) 已启用" }
-            else { "$($shortcut.Key) 当前绑定：$($shortcut.Actual ?? '无')" }
+            else {
+                $actualBinding = if ($shortcut.Actual) { $shortcut.Actual } else { '无' }
+                "$($shortcut.Key) 当前绑定：$actualBinding"
+            }
         $action = if ($null -eq $success) { '请在交互式终端中检查' }
             elseif ($shortcut.Active) { '' }
             else { '重新导入模块并检查快捷键冲突' }
@@ -3190,10 +3280,10 @@ function Uninstall-PSAIProfileIntegration {
 Initialize-AIState
 Initialize-AISessionState
 
-if ($script:Config.integrations.feedbackProvider) {
+if ($script:OfficialIntegrationAvailable -and $script:Config.integrations.feedbackProvider) {
     [PSAITerminal.AITerminalOfficialIntegration]::RegisterFeedback(); $script:FeedbackEnabled = $true
 }
-if ($script:Config.integrations.predictor) {
+if ($script:OfficialIntegrationAvailable -and $script:Config.integrations.predictor) {
     [PSAITerminal.AITerminalOfficialIntegration]::RegisterPredictor(); $script:PredictorEnabled = $true
 }
 Register-AIPSReadLineIntegration
@@ -3220,7 +3310,9 @@ if (-not $script:ConfigLoadFailed -and -not [bool]$script:Config.onboardingShown
 $ExecutionContext.SessionState.Module.OnRemove = {
     Unregister-AIPSReadLineIntegration
     Unregister-AIPromptIntegration
-    [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll()
+    if ($script:OfficialIntegrationAvailable) {
+        [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll()
+    }
 }
 
 Set-Alias -Name Configure-PSAI -Value Open-PSAISettings -Scope Script

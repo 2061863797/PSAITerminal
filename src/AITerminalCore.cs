@@ -7,6 +7,11 @@ using System.Text.RegularExpressions;
 
 namespace PSAITerminal;
 
+internal static class AITerminalPlatform
+{
+    internal static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+}
+
 public enum AITerminalMode
 {
     Off,
@@ -56,8 +61,9 @@ public sealed class AITerminalStreamingTextSanitizer
             return string.Empty;
         }
 
-        StringBuilder result = new(value.Length);
-        foreach (char character in value)
+        string nonEmptyValue = value!;
+        StringBuilder result = new(nonEmptyValue.Length);
+        foreach (char character in nonEmptyValue)
         {
             switch (_state)
             {
@@ -306,7 +312,10 @@ public static class AITerminalEndpointResolver
 
     private static void ValidateBaseEndpoint(Uri endpoint)
     {
-        ArgumentNullException.ThrowIfNull(endpoint);
+        if (endpoint is null)
+        {
+            throw new ArgumentNullException(nameof(endpoint));
+        }
         if (!AITerminalSecurity.IsEndpointAllowed(endpoint))
         {
             throw new ArgumentException("接口地址只允许 HTTPS；HTTP 仅允许本机环回地址，且不能包含用户名或密码。", nameof(endpoint));
@@ -329,7 +338,7 @@ public static class AITerminalEndpointResolver
                 normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
             AIProtocol.Anthropic => normalized.EndsWith("/messages", StringComparison.OrdinalIgnoreCase) ||
                 normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
-            AIProtocol.GeminiNative => normalized.Contains(":streamGenerateContent", StringComparison.OrdinalIgnoreCase) ||
+            AIProtocol.GeminiNative => normalized.IndexOf(":streamGenerateContent", StringComparison.OrdinalIgnoreCase) >= 0 ||
                 normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
             AIProtocol.Ollama => normalized.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase) ||
                 normalized.EndsWith("/api/tags", StringComparison.OrdinalIgnoreCase),
@@ -360,9 +369,10 @@ public static class AITerminalEndpointResolver
             throw new ArgumentException("Gemini Native 请求必须提供模型 ID。", nameof(modelId));
         }
 
-        string normalizedModel = modelId.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
-            ? modelId[7..]
-            : modelId;
+        string nonEmptyModelId = modelId!;
+        string normalizedModel = nonEmptyModelId.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
+            ? nonEmptyModelId.Substring(7)
+            : nonEmptyModelId;
         if (!Regex.IsMatch(normalizedModel, "^[A-Za-z0-9._-]+$", RegexOptions.CultureInvariant))
         {
             throw new ArgumentException("Gemini Native 模型 ID 无效。", nameof(modelId));
@@ -558,7 +568,7 @@ public static class AITerminalSecurity
         {
             foreach (string secret in secrets.Where(static value => !string.IsNullOrEmpty(value)))
             {
-                result = result.Replace(secret, "[REDACTED]", StringComparison.Ordinal);
+                result = result.Replace(secret, "[REDACTED]");
             }
         }
 
@@ -578,7 +588,7 @@ public static class AITerminalSecurity
                 keep--;
             }
 
-            result = result[..keep] + marker;
+            result = result.Substring(0, keep) + marker;
         }
 
         return result;
@@ -640,14 +650,15 @@ public sealed class AITerminalBoundedTextCollector
             return;
         }
 
-        int count = Math.Min(remaining, value.Length);
-        if (count > 0 && count < value.Length && char.IsHighSurrogate(value[count - 1]))
+        string nonEmptyValue = value!;
+        int count = Math.Min(remaining, nonEmptyValue.Length);
+        if (count > 0 && count < nonEmptyValue.Length && char.IsHighSurrogate(nonEmptyValue[count - 1]))
         {
             count--;
         }
 
-        _content.Append(value, 0, count);
-        if (count < value.Length)
+        _content.Append(nonEmptyValue, 0, count);
+        if (count < nonEmptyValue.Length)
         {
             MarkTruncated();
         }
@@ -679,7 +690,10 @@ public static class AITerminalHttpContent
 {
     public static string ReadString(HttpContent content, int maximumCharacters, CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(content);
+        if (content is null)
+        {
+            throw new ArgumentNullException(nameof(content));
+        }
         if (maximumCharacters is < 1 or > 16 * 1024 * 1024)
         {
             throw new ArgumentOutOfRangeException(nameof(maximumCharacters));
@@ -693,13 +707,15 @@ public static class AITerminalHttpContent
         int maximumCharacters,
         CancellationToken cancellationToken)
     {
-        await using Stream stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        using Stream stream = await content.ReadAsStreamAsync().ConfigureAwait(false);
         using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 8192);
         StringBuilder result = new(Math.Min(maximumCharacters, 8192));
         char[] buffer = new char[8192];
         while (true)
         {
-            int read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            int read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
             if (read == 0)
             {
                 return result.ToString();
@@ -721,7 +737,10 @@ public static class AITerminalAtomicFile
 
     public static void WriteAllText(string path, string content)
     {
-        ArgumentException.ThrowIfNullOrEmpty(path);
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new ArgumentException("路径不能为空。", nameof(path));
+        }
         string fullPath = Path.GetFullPath(path);
         string directory = Path.GetDirectoryName(fullPath)!;
         EnsurePrivateDirectory(directory);
@@ -730,7 +749,14 @@ public static class AITerminalAtomicFile
         {
             File.WriteAllText(temporaryPath, content, new UTF8Encoding(false));
             EnsurePrivateFile(temporaryPath);
-            File.Move(temporaryPath, fullPath, overwrite: true);
+            if (File.Exists(fullPath))
+            {
+                File.Replace(temporaryPath, fullPath, null);
+            }
+            else
+            {
+                File.Move(temporaryPath, fullPath);
+            }
             EnsurePrivateFile(fullPath);
         }
         finally
@@ -741,7 +767,10 @@ public static class AITerminalAtomicFile
 
     public static IDisposable AcquireLock(string path, int timeoutMilliseconds = DefaultLockTimeoutMilliseconds)
     {
-        ArgumentException.ThrowIfNullOrEmpty(path);
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new ArgumentException("路径不能为空。", nameof(path));
+        }
         if (timeoutMilliseconds is < 1 or > 60000)
         {
             throw new ArgumentOutOfRangeException(nameof(timeoutMilliseconds));
@@ -774,53 +803,45 @@ public static class AITerminalAtomicFile
 
     public static void EnsurePrivateDirectory(string path)
     {
-        ArgumentException.ThrowIfNullOrEmpty(path);
+        if (string.IsNullOrEmpty(path))
+        {
+            throw new ArgumentException("路径不能为空。", nameof(path));
+        }
         string fullPath = Path.GetFullPath(path);
         Directory.CreateDirectory(fullPath);
-        if (!OperatingSystem.IsWindows())
+        if (!AITerminalPlatform.IsWindows)
         {
-            File.SetUnixFileMode(fullPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            throw new PlatformNotSupportedException("PSAITerminal 0.6.0 仅支持 Windows。");
         }
     }
 
     public static void EnsurePrivateFile(string path)
     {
-        ArgumentException.ThrowIfNullOrEmpty(path);
-        string fullPath = Path.GetFullPath(path);
-        if (!OperatingSystem.IsWindows() && File.Exists(fullPath))
+        if (string.IsNullOrEmpty(path))
         {
-            File.SetUnixFileMode(fullPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            throw new ArgumentException("路径不能为空。", nameof(path));
+        }
+        string fullPath = Path.GetFullPath(path);
+        if (!AITerminalPlatform.IsWindows)
+        {
+            throw new PlatformNotSupportedException("PSAITerminal 0.6.0 仅支持 Windows。");
         }
     }
 }
 
 public static class PlatformCredentialStore
 {
-    public static string BackendName => OperatingSystem.IsWindows()
+    public static string BackendName => AITerminalPlatform.IsWindows
         ? "Windows Credential Manager"
-        : OperatingSystem.IsMacOS()
-            ? "macOS Keychain"
-            : OperatingSystem.IsLinux()
-                ? "Linux Secret Service"
-                : "不可用";
+        : "不可用";
 
-    public static bool IsAvailable => (OperatingSystem.IsWindows() && WindowsCredentialStore.IsAvailable) ||
-        (OperatingSystem.IsMacOS() && MacOSKeychainStore.IsAvailable) ||
-        (OperatingSystem.IsLinux() && LinuxSecretServiceStore.IsAvailable);
+    public static bool IsAvailable => AITerminalPlatform.IsWindows && WindowsCredentialStore.IsAvailable;
 
     public static void Set(string target, string secret)
     {
-        if (OperatingSystem.IsWindows())
+        if (AITerminalPlatform.IsWindows)
         {
             WindowsCredentialStore.Set(target, secret);
-        }
-        else if (OperatingSystem.IsMacOS())
-        {
-            MacOSKeychainStore.Set(target, secret);
-        }
-        else if (OperatingSystem.IsLinux())
-        {
-            LinuxSecretServiceStore.Set(target, secret);
         }
         else
         {
@@ -830,362 +851,18 @@ public static class PlatformCredentialStore
 
     public static string? Get(string target)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            return WindowsCredentialStore.IsAvailable ? WindowsCredentialStore.Get(target) : null;
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            return MacOSKeychainStore.IsAvailable ? MacOSKeychainStore.Get(target) : null;
-        }
-
-        return OperatingSystem.IsLinux() && LinuxSecretServiceStore.IsAvailable
-            ? LinuxSecretServiceStore.Get(target)
+        return AITerminalPlatform.IsWindows && WindowsCredentialStore.IsAvailable
+            ? WindowsCredentialStore.Get(target)
             : null;
     }
 
     public static void Remove(string target)
     {
-        if (OperatingSystem.IsWindows() && WindowsCredentialStore.IsAvailable)
+        if (AITerminalPlatform.IsWindows && WindowsCredentialStore.IsAvailable)
         {
             WindowsCredentialStore.Remove(target);
         }
-        else if (OperatingSystem.IsMacOS() && MacOSKeychainStore.IsAvailable)
-        {
-            MacOSKeychainStore.Remove(target);
-        }
-        else if (OperatingSystem.IsLinux() && LinuxSecretServiceStore.IsAvailable)
-        {
-            LinuxSecretServiceStore.Remove(target);
-        }
     }
-}
-
-internal static class LinuxSecretServiceStore
-{
-    private const int TimeoutMilliseconds = 15000;
-
-    internal static bool IsAvailable => FindSecretTool() is not null;
-
-    internal static void Set(string target, string secret)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        ArgumentNullException.ThrowIfNull(secret);
-        string tool = FindSecretTool() ?? throw new PlatformNotSupportedException(
-            "Linux Secret Service 不可用。请安装 libsecret-tools 并启动桌面密钥环，或使用 -SessionOnly。"
-        );
-        ProcessResult result = Run(tool,
-            ["store", "--label=PSAITerminal", "application", "PSAITerminal", "target", target],
-            secret);
-        ThrowOnFailure(result, "保存 Linux Secret Service 密钥");
-    }
-
-    internal static string? Get(string target)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        string? tool = FindSecretTool();
-        if (tool is null)
-        {
-            return null;
-        }
-
-        ProcessResult result = Run(tool,
-            ["lookup", "application", "PSAITerminal", "target", target],
-            null);
-        if (result.ExitCode != 0 && string.IsNullOrWhiteSpace(result.Error))
-        {
-            return null;
-        }
-
-        ThrowOnFailure(result, "读取 Linux Secret Service 密钥");
-        return result.Output.TrimEnd('\r', '\n');
-    }
-
-    internal static void Remove(string target)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        string? tool = FindSecretTool();
-        if (tool is null)
-        {
-            return;
-        }
-
-        ProcessResult result = Run(tool,
-            ["clear", "application", "PSAITerminal", "target", target],
-            null);
-        if (result.ExitCode != 0 && string.IsNullOrWhiteSpace(result.Error))
-        {
-            return;
-        }
-
-        ThrowOnFailure(result, "删除 Linux Secret Service 密钥");
-    }
-
-    private static string? FindSecretTool()
-    {
-        string executable = "secret-tool";
-        string? path = Environment.GetEnvironmentVariable("PATH");
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return null;
-        }
-
-        foreach (string directory in path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            try
-            {
-                string candidate = Path.Combine(directory.Trim(), executable);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-            catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
-            {
-            }
-        }
-
-        return null;
-    }
-
-    private static ProcessResult Run(string executable, IReadOnlyList<string> arguments, string? standardInput)
-    {
-        ProcessStartInfo startInfo = new(executable)
-        {
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            StandardInputEncoding = new UTF8Encoding(false),
-            StandardOutputEncoding = new UTF8Encoding(false),
-            StandardErrorEncoding = new UTF8Encoding(false),
-        };
-        foreach (string argument in arguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        using Process process = new() { StartInfo = startInfo };
-        try
-        {
-            process.Start();
-        }
-        catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
-        {
-            throw new PlatformNotSupportedException("无法启动 secret-tool。请安装 libsecret-tools，或使用 -SessionOnly。", exception);
-        }
-
-        Task<string> outputTask = process.StandardOutput.ReadToEndAsync();
-        Task<string> errorTask = process.StandardError.ReadToEndAsync();
-        if (standardInput is not null)
-        {
-            process.StandardInput.Write(standardInput);
-        }
-
-        process.StandardInput.Close();
-        if (!process.WaitForExit(TimeoutMilliseconds))
-        {
-            try { process.Kill(entireProcessTree: true); } catch { }
-            throw new TimeoutException("Linux Secret Service 操作在 15 秒内没有完成。");
-        }
-
-        Task.WaitAll(outputTask, errorTask);
-        return new ProcessResult(process.ExitCode, outputTask.Result, errorTask.Result);
-    }
-
-    private static void ThrowOnFailure(ProcessResult result, string operation)
-    {
-        if (result.ExitCode == 0)
-        {
-            return;
-        }
-
-        string detail = result.Error.Trim();
-        if (detail.Length > 2048)
-        {
-            detail = detail[..2048];
-        }
-
-        throw new InvalidOperationException(string.IsNullOrEmpty(detail)
-            ? $"{operation}失败，secret-tool 退出码：{result.ExitCode}。"
-            : $"{operation}失败：{detail}");
-    }
-
-    private readonly record struct ProcessResult(int ExitCode, string Output, string Error);
-}
-
-internal static class MacOSKeychainStore
-{
-    private const string SecurityFramework = "/System/Library/Frameworks/Security.framework/Security";
-    private const string CoreFoundationFramework = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation";
-    private const int Success = 0;
-    private const int ItemNotFound = -25300;
-    private static readonly byte[] s_service = Encoding.UTF8.GetBytes("PSAITerminal");
-
-    internal static bool IsAvailable
-    {
-        get
-        {
-            byte[] account = Encoding.UTF8.GetBytes("PSAITerminal/AvailabilityProbe");
-            IntPtr passwordData = IntPtr.Zero;
-            IntPtr item = IntPtr.Zero;
-            try
-            {
-                int status = SecKeychainFindGenericPassword(IntPtr.Zero,
-                    (uint)s_service.Length, s_service, (uint)account.Length, account,
-                    out _, out passwordData, out item);
-                return status is Success or ItemNotFound;
-            }
-            catch (DllNotFoundException)
-            {
-                return false;
-            }
-            finally
-            {
-                if (passwordData != IntPtr.Zero) { SecKeychainItemFreeContent(IntPtr.Zero, passwordData); }
-                if (item != IntPtr.Zero) { CFRelease(item); }
-                Array.Clear(account);
-            }
-        }
-    }
-
-    internal static void Set(string target, string secret)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        ArgumentNullException.ThrowIfNull(secret);
-        byte[] account = Encoding.UTF8.GetBytes(target);
-        byte[] password = Encoding.UTF8.GetBytes(secret);
-        IntPtr passwordData = IntPtr.Zero;
-        IntPtr item = IntPtr.Zero;
-        try
-        {
-            int status = SecKeychainFindGenericPassword(IntPtr.Zero,
-                (uint)s_service.Length, s_service, (uint)account.Length, account,
-                out _, out passwordData, out item);
-            if (status == Success)
-            {
-                if (passwordData != IntPtr.Zero)
-                {
-                    SecKeychainItemFreeContent(IntPtr.Zero, passwordData);
-                    passwordData = IntPtr.Zero;
-                }
-
-                ThrowOnFailure(SecKeychainItemModifyAttributesAndData(item, IntPtr.Zero,
-                    (uint)password.Length, password), "更新 macOS Keychain 密钥");
-                return;
-            }
-
-            if (status != ItemNotFound)
-            {
-                ThrowOnFailure(status, "查找 macOS Keychain 密钥");
-            }
-
-            ThrowOnFailure(SecKeychainAddGenericPassword(IntPtr.Zero,
-                (uint)s_service.Length, s_service, (uint)account.Length, account,
-                (uint)password.Length, password, out item), "保存 macOS Keychain 密钥");
-        }
-        finally
-        {
-            if (passwordData != IntPtr.Zero) { SecKeychainItemFreeContent(IntPtr.Zero, passwordData); }
-            if (item != IntPtr.Zero) { CFRelease(item); }
-            Array.Clear(account);
-            Array.Clear(password);
-        }
-    }
-
-    internal static string? Get(string target)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        byte[] account = Encoding.UTF8.GetBytes(target);
-        IntPtr passwordData = IntPtr.Zero;
-        IntPtr item = IntPtr.Zero;
-        try
-        {
-            int status = SecKeychainFindGenericPassword(IntPtr.Zero,
-                (uint)s_service.Length, s_service, (uint)account.Length, account,
-                out uint passwordLength, out passwordData, out item);
-            if (status == ItemNotFound) { return null; }
-            ThrowOnFailure(status, "读取 macOS Keychain 密钥");
-            byte[] password = new byte[passwordLength];
-            try
-            {
-                Marshal.Copy(passwordData, password, 0, password.Length);
-                return Encoding.UTF8.GetString(password);
-            }
-            finally
-            {
-                Array.Clear(password);
-            }
-        }
-        finally
-        {
-            if (passwordData != IntPtr.Zero) { SecKeychainItemFreeContent(IntPtr.Zero, passwordData); }
-            if (item != IntPtr.Zero) { CFRelease(item); }
-            Array.Clear(account);
-        }
-    }
-
-    internal static void Remove(string target)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        byte[] account = Encoding.UTF8.GetBytes(target);
-        IntPtr passwordData = IntPtr.Zero;
-        IntPtr item = IntPtr.Zero;
-        try
-        {
-            int status = SecKeychainFindGenericPassword(IntPtr.Zero,
-                (uint)s_service.Length, s_service, (uint)account.Length, account,
-                out _, out passwordData, out item);
-            if (status == ItemNotFound) { return; }
-            ThrowOnFailure(status, "查找 macOS Keychain 密钥");
-            if (passwordData != IntPtr.Zero)
-            {
-                SecKeychainItemFreeContent(IntPtr.Zero, passwordData);
-                passwordData = IntPtr.Zero;
-            }
-
-            ThrowOnFailure(SecKeychainItemDelete(item), "删除 macOS Keychain 密钥");
-        }
-        finally
-        {
-            if (passwordData != IntPtr.Zero) { SecKeychainItemFreeContent(IntPtr.Zero, passwordData); }
-            if (item != IntPtr.Zero) { CFRelease(item); }
-            Array.Clear(account);
-        }
-    }
-
-    private static void ThrowOnFailure(int status, string operation)
-    {
-        if (status != Success)
-        {
-            throw new InvalidOperationException($"{operation}失败，OSStatus：{status}。");
-        }
-    }
-
-    [DllImport(SecurityFramework)]
-    private static extern int SecKeychainAddGenericPassword(IntPtr keychain,
-        uint serviceNameLength, byte[] serviceName, uint accountNameLength, byte[] accountName,
-        uint passwordLength, byte[] passwordData, out IntPtr itemRef);
-
-    [DllImport(SecurityFramework)]
-    private static extern int SecKeychainFindGenericPassword(IntPtr keychainOrArray,
-        uint serviceNameLength, byte[] serviceName, uint accountNameLength, byte[] accountName,
-        out uint passwordLength, out IntPtr passwordData, out IntPtr itemRef);
-
-    [DllImport(SecurityFramework)]
-    private static extern int SecKeychainItemModifyAttributesAndData(IntPtr itemRef,
-        IntPtr attributes, uint length, byte[] data);
-
-    [DllImport(SecurityFramework)]
-    private static extern int SecKeychainItemDelete(IntPtr itemRef);
-
-    [DllImport(SecurityFramework)]
-    private static extern int SecKeychainItemFreeContent(IntPtr attributes, IntPtr data);
-
-    [DllImport(CoreFoundationFramework)]
-    private static extern void CFRelease(IntPtr value);
 }
 
 public static class WindowsCredentialStore
@@ -1198,7 +875,7 @@ public static class WindowsCredentialStore
     {
         get
         {
-            if (!OperatingSystem.IsWindows()) { return false; }
+            if (!AITerminalPlatform.IsWindows) { return false; }
             try
             {
                 _ = Get("PSAITerminal/AvailabilityProbe");
@@ -1214,8 +891,8 @@ public static class WindowsCredentialStore
     public static void Set(string target, string secret)
     {
         EnsureWindows();
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
-        ArgumentNullException.ThrowIfNull(secret);
+        if (string.IsNullOrWhiteSpace(target)) { throw new ArgumentException("目标名称不能为空。", nameof(target)); }
+        if (secret is null) { throw new ArgumentNullException(nameof(secret)); }
 
         byte[] bytes = Encoding.Unicode.GetBytes(secret);
         IntPtr blob = Marshal.AllocCoTaskMem(bytes.Length);
@@ -1239,7 +916,7 @@ public static class WindowsCredentialStore
         }
         finally
         {
-            Array.Clear(bytes);
+            Array.Clear(bytes, 0, bytes.Length);
             for (int index = 0; index < bytes.Length; index++)
             {
                 Marshal.WriteByte(blob, index, 0);
@@ -1252,7 +929,7 @@ public static class WindowsCredentialStore
     public static string? Get(string target)
     {
         EnsureWindows();
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
+        if (string.IsNullOrWhiteSpace(target)) { throw new ArgumentException("目标名称不能为空。", nameof(target)); }
         if (!CredRead(target, GenericCredential, 0, out IntPtr pointer))
         {
             int error = Marshal.GetLastWin32Error();
@@ -1278,7 +955,7 @@ public static class WindowsCredentialStore
     public static void Remove(string target)
     {
         EnsureWindows();
-        ArgumentException.ThrowIfNullOrWhiteSpace(target);
+        if (string.IsNullOrWhiteSpace(target)) { throw new ArgumentException("目标名称不能为空。", nameof(target)); }
         if (CredDelete(target, GenericCredential, 0))
         {
             return;
@@ -1293,7 +970,7 @@ public static class WindowsCredentialStore
 
     private static void EnsureWindows()
     {
-        if (!OperatingSystem.IsWindows())
+        if (!AITerminalPlatform.IsWindows)
         {
             throw new PlatformNotSupportedException("WindowsCredentialStore 仅能在 Windows 上使用。");
         }

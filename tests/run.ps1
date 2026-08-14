@@ -1,4 +1,4 @@
-Set-StrictMode -Version 3.0
+﻿Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -116,33 +116,12 @@ try {
     Assert-Equal 'about_PSAITerminal' (Get-Help about_PSAITerminal -ErrorAction Stop).Name '发布包必须提供可发现的简体中文帮助主题。'
     $readme = Get-Content -LiteralPath (Join-Path $moduleOutput 'README.md') -Raw
     Assert-Match $readme '\| Windows \| `<Documents>/PowerShell/PSAITerminal` \| `%LOCALAPPDATA%/PowerShell/PSAITerminal` \|' 'Windows 文档必须使用实际的 PSAITerminal 配置目录名。'
-    Assert-True $readme.Contains("当前 ``$releaseVersion`` 发布仅支持并验收 Windows") '文档必须明确当前版本只支持并验收 Windows。'
+    Assert-True $readme.Contains("当前 ``$releaseVersion`` 发布仅支持 Windows PowerShell 5.1") '文档必须明确当前版本的双宿主 Windows 支持范围。'
     Assert-Equal $false $readme.Contains('适用于 Windows、Linux 和 macOS') '文档不能把未验收的平台列为当前支持范围。'
     Assert-Match $readme '不是自动回滚功能' '文档必须明确说明 AI 的回滚提示不会自动恢复系统状态。'
 
     $credentialTarget = 'PSAITerminal/Test/' + [guid]::NewGuid().ToString('N')
     $credentialValue = 'cross-platform-secret-' + [guid]::NewGuid().ToString('N')
-    $originalPath = $env:PATH
-    if ($IsLinux) {
-        $fakeToolDirectory = Join-Path $testRoot 'fake-secret-tool'
-        [void][IO.Directory]::CreateDirectory($fakeToolDirectory)
-        $fakeTool = Join-Path $fakeToolDirectory 'secret-tool'
-        $secretFile = Join-Path $testRoot 'fake-secret-value'
-        $fakeToolContent = @'
-#!/bin/sh
-case "$1" in
-  store) value=$(cat); printf '%s' "$value" > "$PSAI_TEST_SECRET_FILE" ;;
-  lookup) [ -f "$PSAI_TEST_SECRET_FILE" ] || exit 1; cat "$PSAI_TEST_SECRET_FILE" ;;
-  clear) rm -f "$PSAI_TEST_SECRET_FILE" ;;
-  *) exit 2 ;;
-esac
-'@
-        Set-Content -LiteralPath $fakeTool -Value $fakeToolContent -NoNewline -Encoding utf8
-        [IO.File]::SetUnixFileMode($fakeTool,
-            [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
-        $env:PSAI_TEST_SECRET_FILE = $secretFile
-        $env:PATH = "$fakeToolDirectory$([IO.Path]::PathSeparator)$originalPath"
-    }
     try {
         if ([PSAITerminal.PlatformCredentialStore]::IsAvailable) {
             $credentialPersisted = $false
@@ -150,8 +129,7 @@ esac
                 [PSAITerminal.PlatformCredentialStore]::Set($credentialTarget, $credentialValue)
                 $credentialPersisted = $true
             } catch {
-                if ($IsLinux) { throw }
-                Assert-Match $_.Exception.Message 'Credential|Keychain|登录会话|OSStatus|密钥' '桌面密钥库不可写时必须返回明确错误。'
+                Assert-Match $_.Exception.Message 'Credential|登录会话|密钥|凭据' 'Windows 凭据管理器不可写时必须返回明确错误。'
             }
             if ($credentialPersisted) {
                 Assert-Equal $credentialValue ([PSAITerminal.PlatformCredentialStore]::Get($credentialTarget)) '平台密钥库必须原样读取已保存密钥。'
@@ -164,8 +142,6 @@ esac
         }
     } finally {
         try { [PSAITerminal.PlatformCredentialStore]::Remove($credentialTarget) } catch {}
-        $env:PATH = $originalPath
-        Remove-Item Env:PSAI_TEST_SECRET_FILE -ErrorAction SilentlyContinue
     }
 
     $limitedContent = [Net.Http.StringContent]::new('12345')
@@ -192,18 +168,6 @@ esac
     try {
         Assert-Throws { [PSAITerminal.AITerminalAtomicFile]::AcquireLock($lockTarget, 50).Dispose() } '等待文件锁超时' '同一路径的第二个写入者必须等待或明确超时。'
     } finally { $firstLock.Dispose() }
-
-    if (-not $IsWindows) {
-        $privateDirectory = Join-Path $testRoot 'private-permissions'
-        $privateFile = Join-Path $privateDirectory 'state.json'
-        [PSAITerminal.AITerminalAtomicFile]::WriteAllText($privateFile, '{}')
-        $directoryMode = [IO.File]::GetUnixFileMode($privateDirectory)
-        $fileMode = [IO.File]::GetUnixFileMode($privateFile)
-        $expectedDirectoryMode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
-        $expectedFileMode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
-        Assert-Equal $expectedDirectoryMode $directoryMode 'Unix 持久化目录必须强制为 0700。'
-        Assert-Equal $expectedFileMode $fileMode 'Unix 持久化文件必须强制为 0600。'
-    }
 
     # 新安装、配置迁移和确定性路由。
     $config = Get-Content -LiteralPath (Join-Path $env:PSAI_CONFIG_HOME 'config.json') -Raw | ConvertFrom-Json
@@ -936,6 +900,29 @@ esac
     Assert-True (Test-Path -LiteralPath $env:PSAI_CONFIG_HOME) '卸载器默认必须保留用户配置。'
     Assert-Equal $false ((Get-Content -LiteralPath $testProfile -Raw) -match 'PSAITerminal 自动加载') '卸载器必须移除自己的 Profile 区块。'
     $env:PSModulePath = $originalModulePath
+
+    # Both 只能使用两个标准用户目录；测试通过专用文档根隔离，绝不触碰真实安装目录。
+    $env:PSAI_TEST_DOCUMENTS_HOME = Join-Path $testRoot 'installer/both-documents'
+    $env:PSAI_TEST_MODE = '1'
+    try {
+        Assert-Throws {
+            & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -TargetHost Both `
+                -ModuleRoot (Join-Path $testRoot 'invalid-root') -NoProfileIntegration
+        } '不能与' 'Both 必须拒绝自定义模块根，避免安装目标歧义。'
+        & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -TargetHost Both -NoProfileIntegration | Out-Null
+        foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {
+            $bothPath = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Modules/PSAITerminal/$releaseVersion"
+            Assert-True (Test-Path -LiteralPath $bothPath -PathType Container) "Both 未安装到隔离的 $hostDirectory 标准目录。"
+        }
+        & (Join-Path $moduleOutput 'Uninstall-PSAITerminal.ps1') -TargetHost Both -NoProfileIntegration | Out-Null
+        foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {
+            $bothBase = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Modules/PSAITerminal"
+            Assert-Equal $false (Test-Path -LiteralPath $bothBase) "Both 卸载未清理隔离的 $hostDirectory 模块目录。"
+        }
+    } finally {
+        Remove-Item Env:PSAI_TEST_DOCUMENTS_HOME -ErrorAction SilentlyContinue
+        Remove-Item Env:PSAI_TEST_MODE -ErrorAction SilentlyContinue
+    }
 
     Write-Host 'PSAITerminal 完整回归测试通过。' -ForegroundColor Green
 } finally {
