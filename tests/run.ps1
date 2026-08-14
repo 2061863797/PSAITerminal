@@ -8,6 +8,7 @@ $modulePath = Join-Path $moduleOutput 'PSAITerminal.psd1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("PSAITerminal.Tests." + [guid]::NewGuid().ToString('N'))
 $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'config'
 $env:PSAI_DATA_HOME = Join-Path $testRoot 'data'
+$isWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
 [void][IO.Directory]::CreateDirectory($testRoot)
 
 function Assert-Equal($Expected, $Actual, [string]$Message) {
@@ -33,9 +34,11 @@ function Start-AIMockServer([string[]]$Responses) {
     $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port
     $probe.Stop()
     $responseJson = ConvertTo-Json -InputObject @($Responses) -Compress
-    $job = Start-ThreadJob -ArgumentList $port,$responseJson -ScriptBlock {
+    $jobStarter = if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) { 'Start-ThreadJob' } else { 'Start-Job' }
+    $job = & $jobStarter -ArgumentList $port,$responseJson -ScriptBlock {
         param($Port, $ResponseJson)
-        $responses = @($ResponseJson | ConvertFrom-Json)
+        $responses = [Collections.Generic.List[string]]::new()
+        foreach ($decodedResponse in ($ResponseJson | ConvertFrom-Json)) { $responses.Add([string]$decodedResponse) }
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         'READY'
@@ -58,19 +61,33 @@ function Start-AIMockServer([string[]]$Responses) {
                         if ($headerEnd -ge 0 -and $total -ge ($headerEnd + 4 + $contentLength)) { break }
                     }
                     $statusCode = 200; $statusText = 'OK'; $responsePayload = [string]$payload; $extraHeaders = ''
+                    $splitLength = 0; $splitDelayMilliseconds = 0
                     if ($responsePayload -match '^__STATUS_(\d{3})__(.*)$') {
                         $statusCode = [int]$Matches[1]
                         $statusText = if ($statusCode -eq 429) { 'Too Many Requests' } else { 'Test Error' }
                         $responsePayload = $Matches[2]
                     } elseif ($responsePayload -match '^__REDIRECT__(.+)$') {
                         $statusCode = 302; $statusText = 'Found'; $extraHeaders = "Location: $($Matches[1])`r`n"; $responsePayload = ''
+                    } elseif ($responsePayload -match '(?s)^__SPLIT_(\d+)_(\d+)__(.*)$') {
+                        $splitDelayMilliseconds = [int]$Matches[1]
+                        $splitLength = [int]$Matches[2]
+                        $responsePayload = $Matches[3]
                     }
                     $body = [Text.Encoding]::UTF8.GetBytes($responsePayload)
+                    if ($splitLength -lt 0 -or $splitLength -gt $body.Length) { throw '分段响应位置无效。' }
                     $header = [Text.Encoding]::ASCII.GetBytes(
                         "HTTP/1.1 $statusCode $statusText`r`n${extraHeaders}Content-Type: text/event-stream`r`nContent-Length: $($body.Length)`r`nConnection: close`r`n`r`n")
                     $stream.Write($header, 0, $header.Length)
-                    $stream.Write($body, 0, $body.Length)
+                    if ($splitLength -gt 0) {
+                        $stream.Write($body, 0, $splitLength)
+                        $stream.Flush()
+                        Start-Sleep -Milliseconds $splitDelayMilliseconds
+                        $stream.Write($body, $splitLength, $body.Length - $splitLength)
+                    } else {
+                        $stream.Write($body, 0, $body.Length)
+                    }
                     $stream.Flush()
+                    $client.Client.Shutdown([Net.Sockets.SocketShutdown]::Send)
                 } finally { $client.Dispose() }
             }
         } finally { $listener.Stop() }
@@ -95,11 +112,36 @@ function Stop-AIMockServer($Server) {
 function Start-AIStallingServer {
     $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $probe.Start(); $port = ([Net.IPEndPoint]$probe.LocalEndpoint).Port; $probe.Stop()
-    $job = Start-ThreadJob -ArgumentList $port -ScriptBlock {
+    $jobStarter = if (Get-Command Start-ThreadJob -ErrorAction SilentlyContinue) { 'Start-ThreadJob' } else { 'Start-Job' }
+    $job = & $jobStarter -ArgumentList $port -ScriptBlock {
         param($Port)
         $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
         $listener.Start(); 'READY'
-        try { $client=$listener.AcceptTcpClient(); Start-Sleep -Seconds 3; $client.Dispose() }
+        try {
+            $client = $listener.AcceptTcpClient()
+            try {
+                $stream = $client.GetStream()
+                $buffer = [byte[]]::new(65536)
+                $total = 0
+                $headerEnd = -1
+                while ($headerEnd -lt 0 -and $total -lt $buffer.Length) {
+                    $read = $stream.Read($buffer, $total, $buffer.Length - $total)
+                    if ($read -le 0) { break }
+                    $total += $read
+                    $requestText = [Text.Encoding]::ASCII.GetString($buffer, 0, $total)
+                    $headerEnd = $requestText.IndexOf("`r`n`r`n", [StringComparison]::Ordinal)
+                }
+                if ($headerEnd -lt 0) { throw '停滞服务未收到完整请求头。' }
+                if ($requestText -match '(?im)^Expect:\s*100-continue') {
+                    $continue = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
+                    $stream.Write($continue, 0, $continue.Length)
+                }
+                $headers = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 200 OK`r`nContent-Type: text/event-stream`r`nConnection: close`r`n`r`n")
+                $stream.Write($headers, 0, $headers.Length)
+                $stream.Flush()
+                Start-Sleep -Seconds 3
+            } finally { $client.Dispose() }
+        }
         finally { $listener.Stop() }
     }
     for ($index=0; $index -lt 100; $index++) {
@@ -113,12 +155,15 @@ try {
     if (-not (Test-Path -LiteralPath $modulePath)) { throw "测试模块不存在：$modulePath" }
     Import-Module $modulePath -Force
     $module = Get-Module PSAITerminal
-    Assert-Equal 'about_PSAITerminal' (Get-Help about_PSAITerminal -ErrorAction Stop).Name '发布包必须提供可发现的简体中文帮助主题。'
-    $readme = Get-Content -LiteralPath (Join-Path $moduleOutput 'README.md') -Raw
+    $helpNames = @((Get-Help about_PSAITerminal -ErrorAction Stop).Name)
+    Assert-True ($helpNames -contains 'about_PSAITerminal') '发布包必须提供可发现的简体中文帮助主题。'
+    $readme = [IO.File]::ReadAllText((Join-Path $moduleOutput 'README.md'), [Text.Encoding]::UTF8)
+    $moduleSource = [IO.File]::ReadAllText((Join-Path $moduleOutput 'PSAITerminal.psm1'), [Text.Encoding]::UTF8)
     Assert-Match $readme '\| Windows \| `<Documents>/PowerShell/PSAITerminal` \| `%LOCALAPPDATA%/PowerShell/PSAITerminal` \|' 'Windows 文档必须使用实际的 PSAITerminal 配置目录名。'
     Assert-True $readme.Contains("当前 ``$releaseVersion`` 发布仅支持 Windows PowerShell 5.1") '文档必须明确当前版本的双宿主 Windows 支持范围。'
     Assert-Equal $false $readme.Contains('适用于 Windows、Linux 和 macOS') '文档不能把未验收的平台列为当前支持范围。'
     Assert-Match $readme '不是自动回滚功能' '文档必须明确说明 AI 的回滚提示不会自动恢复系统状态。'
+    Assert-Equal $false $moduleSource.Contains('foreach ($payload in (Read-AIStreamPayloads') '流式响应不能先在括号中完整缓冲。'
 
     $credentialTarget = 'PSAITerminal/Test/' + [guid]::NewGuid().ToString('N')
     $credentialValue = 'cross-platform-secret-' + [guid]::NewGuid().ToString('N')
@@ -152,6 +197,43 @@ try {
     try {
         Assert-Throws { [PSAITerminal.AITerminalHttpContent]::ReadString($oversizedContent, 5, [Threading.CancellationToken]::None) } '超过 5 个字符' 'HTTP 内容超过上限时必须失败。'
     } finally { $oversizedContent.Dispose() }
+
+    $lineBytes = [Text.Encoding]::UTF8.GetBytes("alpha`nbeta")
+    $lineStream = [IO.MemoryStream]::new($lineBytes)
+    $lineReader = [IO.StreamReader]::new($lineStream)
+    try {
+        Assert-Equal 'alpha' ([PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, [Threading.CancellationToken]::None)) '兼容流读取必须返回第一行。'
+        Assert-Equal 'beta' ([PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, [Threading.CancellationToken]::None)) '兼容流读取必须返回末行。'
+        $lineCancellation = [Threading.CancellationTokenSource]::new()
+        try {
+            $lineCancellation.Cancel()
+            Assert-Throws { [PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, $lineCancellation.Token) } 'cancel|取消|canceled' '兼容流读取必须响应取消令牌。'
+        } finally { $lineCancellation.Dispose() }
+    } finally { $lineReader.Dispose(); $lineStream.Dispose() }
+
+    $streamContent = [Net.Http.StringContent]::new('stream-ok')
+    $contentStream = $null
+    $contentReader = $null
+    try {
+        $contentStream = [PSAITerminal.AITerminalHttpContent]::ReadStream($streamContent, [Threading.CancellationToken]::None)
+        $contentReader = [IO.StreamReader]::new($contentStream)
+        Assert-Equal 'stream-ok' $contentReader.ReadToEnd() '兼容 HTTP 流入口必须返回完整内容。'
+    } finally {
+        if ($contentReader) { $contentReader.Dispose() }
+        elseif ($contentStream) { $contentStream.Dispose() }
+        $streamContent.Dispose()
+    }
+
+    $sendClient = [Net.Http.HttpClient]::new()
+    $sendRequest = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, 'http://127.0.0.1:1/')
+    $sendCancellation = [Threading.CancellationTokenSource]::new()
+    try {
+        $sendCancellation.Cancel()
+        Assert-Throws {
+            [void][PSAITerminal.AITerminalHttpTransport]::Send(
+                $sendClient, $sendRequest, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $sendCancellation.Token)
+        } 'cancel|取消|canceled' '兼容 HTTP 发送入口必须在两个宿主中可调用并响应取消令牌。'
+    } finally { $sendCancellation.Dispose(); $sendRequest.Dispose(); $sendClient.Dispose() }
 
     $collector = [PSAITerminal.AITerminalBoundedTextCollector]::new(64)
     $collector.Append('a' * 200)
@@ -254,7 +336,7 @@ try {
     Assert-Equal $null (Get-Alias ai -ErrorAction SilentlyContinue) 'ai 必须是可被 F3 绕过的 PSReadLine 元命令，不能导出全局 Alias。'
     $keyProbe = & $module {
         $registered = Set-AIPSAIKeyHandler F12 'PSAITest' {} @()
-        try { $handler = Get-PSReadLineKeyHandler -Chord F12; [pscustomobject]@{Registered=$registered;Function=$handler.Function} }
+        try { $handler = Get-AIPSReadLineKeyHandler F12; [pscustomobject]@{Registered=$registered;Function=$handler.Function} }
         finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
     }
     Assert-Equal $true $keyProbe.Registered '未占用快捷键应能注册。'
@@ -263,17 +345,17 @@ try {
         Set-PSReadLineKeyHandler -Key F12 -Function AcceptLine
         try {
             $registered = Set-AIPSAIKeyHandler F12 'PSAIConflict' {} @()
-            [pscustomobject]@{Registered=$registered;Function=(Get-PSReadLineKeyHandler -Chord F12).Function}
+            [pscustomobject]@{Registered=$registered;Function=(Get-AIPSReadLineKeyHandler F12).Function}
         } finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue }
     } 3>$null
     Assert-Equal $false $conflictProbe.Registered '默认不得覆盖已有快捷键。'
     Assert-Equal 'AcceptLine' $conflictProbe.Function '冲突处理器必须保持不变。'
 
     $defaultBindingProbe = & $module {
-        Set-PSReadLineKeyHandler -Key F12 -Function SwitchPredictionView
+        Set-PSReadLineKeyHandler -Key F12 -Function AcceptLine
         try {
-            $registered = Set-AIPSAIKeyHandler F12 'PSAITestDefaultBinding' {} @('SwitchPredictionView')
-            [pscustomobject]@{Registered=$registered;Function=(Get-PSReadLineKeyHandler -Chord F12).Function}
+            $registered = Set-AIPSAIKeyHandler F12 'PSAITestDefaultBinding' {} @('AcceptLine')
+            [pscustomobject]@{Registered=$registered;Function=(Get-AIPSReadLineKeyHandler F12).Function}
         } finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
     }
     Assert-Equal $true $defaultBindingProbe.Registered 'PSAITerminal 应能替换明确允许的 PSReadLine 默认绑定。'
@@ -342,12 +424,13 @@ try {
         Assert-Equal $case[2] $actual 'OpenAI 地址解析错误。'
     }
     $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
-    $clean = $sanitizer.Sanitize("ok`e]0;bad") + $sanitizer.Sanitize("title`aEND")
+    $escapeCharacter = [char]27
+    $clean = $sanitizer.Sanitize("ok$($escapeCharacter)]0;bad") + $sanitizer.Sanitize("title`aEND")
     Assert-Equal 'okEND' $clean '跨分片 OSC 控制序列必须被清理。'
     $sanitizer.Reset(); Assert-Equal 'AB' ($sanitizer.Sanitize("A$([char]0x9b)31mB")) 'C1 CSI 不能残留参数文本。'
-    $sanitizer.Reset(); $charsetClean=$sanitizer.Sanitize("A`e(")+$sanitizer.Sanitize('BB'); Assert-Equal 'AB' $charsetClean '跨分片 ESC 中间序列必须整体移除。'
+    $sanitizer.Reset(); $charsetClean=$sanitizer.Sanitize("A$($escapeCharacter)(")+$sanitizer.Sanitize('BB'); Assert-Equal 'AB' $charsetClean '跨分片 ESC 中间序列必须整体移除。'
     $env:NO_COLOR='1'; try { Assert-Equal $false (& $module { Test-AIColorEnabled }) 'NO_COLOR 必须关闭模块颜色。' } finally { Remove-Item Env:NO_COLOR }
-    $protected = [PSAITerminal.AITerminalSecurity]::ProtectText("Authorization: Bearer secret`e[31m",[string[]]@('secret'),65536)
+    $protected = [PSAITerminal.AITerminalSecurity]::ProtectText("Authorization: Bearer secret$($escapeCharacter)[31m",[string[]]@('secret'),65536)
     Assert-True ($protected -notmatch 'secret|\x1b') '保存前必须脱敏并移除 ANSI。'
     $truncated = [PSAITerminal.AITerminalSecurity]::ProtectText(('x' * 70000),$null,65536)
     Assert-True ($truncated.Length -le 65536 -and $truncated.EndsWith('[输出已截断]')) '步骤输出必须在 64 KiB 内安全截断。'
@@ -404,12 +487,43 @@ try {
         Assert-Equal 'hello' $streamResult.Text 'SSE id 字段不应被当作 JSON 解析。'
     } finally { Stop-AIMockServer $server }
 
+    $firstStreamEvent = "data: {`"choices`":[{`"delta`":{`"content`":`"he`"},`"finish_reason`":null}]}`r`n`r`n"
+    $lastStreamEvent = "data: {`"choices`":[{`"delta`":{`"content`":`"llo`"},`"finish_reason`":`"stop`"}]}`r`n`r`n"
+    $splitLength = [Text.Encoding]::UTF8.GetByteCount($firstStreamEvent)
+    $server = Start-AIMockServer @("__SPLIT_700_${splitLength}__$firstStreamEvent$lastStreamEvent")
+    try {
+        $streamTiming = & $module { param($port)
+            $originalWriter = (Get-Command Write-AIStreamText -CommandType Function).ScriptBlock
+            $script:StreamProbeTimes = [Collections.Generic.List[long]]::new()
+            $script:StreamProbeStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                Set-Item -Path function:Write-AIStreamText -Value {
+                    param([string]$Text, [switch]$First)
+                    $script:StreamProbeTimes.Add($script:StreamProbeStopwatch.ElapsedMilliseconds)
+                }
+                $model=[ordered]@{name='mock';protocol='OpenAIChat';endpoint="http://127.0.0.1:$port";modelId='mock';parameters=@{};capabilities=@{streaming=$true;toolCalling=$true;usage=$false}}
+                $result = Invoke-AIModelText -Model $model -Prompt hi -SecretOverride key
+                [pscustomobject]@{
+                    Text = $result.Text
+                    FirstRenderMilliseconds = $script:StreamProbeTimes[0]
+                    TotalMilliseconds = $script:StreamProbeStopwatch.ElapsedMilliseconds
+                }
+            } finally {
+                Set-Item -Path function:Write-AIStreamText -Value $originalWriter
+                Remove-Variable -Name StreamProbeTimes,StreamProbeStopwatch -Scope Script -ErrorAction SilentlyContinue
+            }
+        } $server.Port
+        Assert-Equal 'hello' $streamTiming.Text '分段流式响应必须保持完整文本。'
+        Assert-True (($streamTiming.TotalMilliseconds - $streamTiming.FirstRenderMilliseconds) -ge 350) '首段文本必须在服务器发送完成事件前渲染。'
+    } finally { Stop-AIMockServer $server }
+
     $server = Start-AIMockServer @('__STATUS_429__{"error":"rate"}',$openAIStream)
     try {
         $retried = & $module { param($port)
             $model=[ordered]@{name='mock';protocol='OpenAIChat';endpoint="http://127.0.0.1:$port";modelId='mock';parameters=@{};capabilities=@{streaming=$true;toolCalling=$true;usage=$false}}
             Invoke-AIModelText -Model $model -Prompt hi -NoRender -SecretOverride key
         } $server.Port
+        Assert-True ($null -ne $retried.PSObject.Properties['Text']) "429 重试必须只返回模型结果对象。实际类型：$($retried.GetType().FullName)；内容：$($retried | Out-String)"
         Assert-Equal 'hello' $retried.Text '429 应在流开始前重试并成功。'
     } finally { Stop-AIMockServer $server }
 
@@ -471,6 +585,27 @@ try {
         } finally { $cancellation.Dispose() }
     } finally { Stop-AIMockServer $server }
 
+    $waitMethods = @([PSAITerminal.AITerminalHttpContent].GetMethods([Reflection.BindingFlags]'NonPublic,Static') |
+        Where-Object Name -eq 'WaitWithCancellationAsync')
+    Assert-Equal 1 $waitMethods.Count '取消清理测试必须找到唯一的底层等待方法。'
+    $waitMethod = $waitMethods[0]
+    $genericWaitMethod = $waitMethod.MakeGenericMethod([type[]]@([IO.MemoryStream]))
+    $completion = [Threading.Tasks.TaskCompletionSource[IO.MemoryStream]]::new(
+        [Threading.Tasks.TaskCreationOptions]::RunContinuationsAsynchronously)
+    $abandonedStream = [IO.MemoryStream]::new([byte[]](1,2,3))
+    $cancelledWait = [Threading.CancellationTokenSource]::new()
+    try {
+        $cancelledWait.Cancel()
+        $waitTask = $genericWaitMethod.Invoke($null, [object[]]@($completion.Task, $cancelledWait.Token))
+        Assert-Throws { $waitTask.GetAwaiter().GetResult() } 'cancel|取消|canceled' '底层异步读取必须立即响应取消令牌。'
+        $completion.SetResult($abandonedStream)
+        for ($index = 0; $index -lt 100 -and $abandonedStream.CanRead; $index++) { Start-Sleep -Milliseconds 10 }
+        Assert-Equal $false $abandonedStream.CanRead '取消后才完成的底层流必须由观察任务释放。'
+    } finally {
+        $cancelledWait.Dispose()
+        $abandonedStream.Dispose()
+    }
+
     # 模型 CRUD、SessionOnly 回滚和持久化。
     New-PSAIModel -Name local -Protocol Ollama -Endpoint http://127.0.0.1:11434 -ModelId qwen3 | Out-Null
     Assert-Equal 1 @((Get-PSAIModel)).Count '新增模型后应立即可见。'
@@ -509,7 +644,10 @@ try {
         New-PSAIModel -Name generationOnly -Protocol OpenAIChat -Endpoint "http://127.0.0.1:$($server.Port)" `
             -ModelId mock -ApiKey $probeKey -SessionOnly | Out-Null
         $connection = Test-PSAIModel -Name generationOnly
-        Assert-Equal $true $connection.Success '模型列表不可用时，真实生成成功仍应通过连接测试。'
+        $serverFailure = if (-not $connection.Success) {
+            "服务器状态：$($server.Job.State)；原因：$($server.Job.ChildJobs[0].JobStateInfo.Reason)；输出：$(Receive-Job $server.Job -Keep 2>&1 | Out-String)"
+        } else { '' }
+        Assert-Equal $true $connection.Success "模型列表不可用时，真实生成成功仍应通过连接测试。生成错误：$($connection.Error)；$serverFailure"
         Assert-Equal $false $connection.ModelListAvailable '连接测试必须如实报告模型列表不可用。'
         Assert-Match $connection.Warning '无法获取模型列表' '模型列表失败原因应作为非阻断警告返回。'
         Remove-PSAIModel -Name generationOnly -Confirm:$false
@@ -557,6 +695,28 @@ try {
     }
     Assert-Equal 2 $sessionConcurrency.Count '基于旧内存快照追加 Turn 时必须在锁内合并最新会话。'
     Assert-Equal 'terminal-A,terminal-B' $sessionConcurrency.Contents '并发合并不能丢失先写入的 Turn。'
+
+    $sessionUsage = & $module {
+        $originalSession = $script:CurrentSession
+        $session = New-AISessionObject 'Turn 与 Token 原子写入测试'
+        Save-AISession $session
+        try {
+            $script:CurrentSession = Import-AISession $session.id
+            $previousRevision = [long]$script:CurrentSession.revision
+            Add-AISessionTurn 'assistant' '计费响应' 'message' @{} -InputTokens 12 -OutputTokens 7 | Out-Null
+            $reloaded = Import-AISession $session.id
+            [pscustomobject]@{
+                RevisionDelta = [long]$reloaded.revision - $previousRevision
+                TurnCount = @($reloaded.turns).Count
+                InputTokens = [long]$reloaded.inputTokens
+                OutputTokens = [long]$reloaded.outputTokens
+            }
+        } finally { $script:CurrentSession = $originalSession }
+    }
+    Assert-Equal 1 $sessionUsage.RevisionDelta '追加响应 Turn 和 Token 用量必须只提交一次会话修订。'
+    Assert-Equal 1 $sessionUsage.TurnCount '原子写入不能重复追加响应 Turn。'
+    Assert-Equal 12 $sessionUsage.InputTokens '输入 Token 必须与响应 Turn 一起持久化。'
+    Assert-Equal 7 $sessionUsage.OutputTokens '输出 Token 必须与响应 Turn 一起持久化。'
 
     $sessionLimit = & $module {
         $session = New-AISessionObject '上限测试'
@@ -792,7 +952,7 @@ try {
     # 顶层 Agent 包装必须保留调用者作用域并准确记录失败。
     $successHarness = & $module { New-AITopLevelHarnessScript "[pscustomobject]@{RunId='r1';StepId='s1';ApprovalDigest=('a'*64);ApprovalRevision=1;Command='`$HarnessScopeProbe=42; function Invoke-HarnessProbe { 99 }; Get-Date | Out-Null'}" }
     $nonTerminatingHarness = & $module { New-AITopLevelHarnessScript "[pscustomobject]@{RunId='r2';StepId='s2';ApprovalDigest=('b'*64);ApprovalRevision=2;Command='Write-Error ''harness-probe'' -ErrorAction Continue; Get-Date | Out-Null'}" }
-    $nativeFailureCommand = if ($IsWindows) { 'cmd /c exit 7' } else { "sh -c 'exit 7'" }
+    $nativeFailureCommand = if ($isWindowsHost) { 'cmd /c exit 7' } else { "sh -c 'exit 7'" }
     $nativeMixedLiteral = "'" + ($nativeFailureCommand + '; Get-Date | Out-Null').Replace("'", "''") + "'"
     $nativeMixedHarness = & $module { param($literal) New-AITopLevelHarnessScript ("[pscustomobject]@{RunId='r3';StepId='s3';ApprovalDigest=('c'*64);ApprovalRevision=3;Command=$literal}") } $nativeMixedLiteral
     $formatHarness = & $module { New-AITopLevelHarnessScript "[pscustomobject]@{RunId='r4';StepId='s4';ApprovalDigest=('d'*64);ApprovalRevision=4;Command='Get-Date | Select-Object DateTime | Format-Table -AutoSize'}" }
@@ -812,7 +972,10 @@ try {
         Set-Variable -Name HarnessObservedOutput -Scope Global -Value $Output
     }
     try {
-        $nativePreferenceBefore = $PSNativeCommandUseErrorActionPreference
+        $nativePreferenceVariable = Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue
+        $nativePreferenceBefore = if ($nativePreferenceVariable) { [bool]$nativePreferenceVariable.Value } else { $null }
+        $lastExitCodeVariableBefore = Get-Variable LASTEXITCODE -ErrorAction SilentlyContinue
+        $lastExitCodeBefore = if ($lastExitCodeVariableBefore) { [int]$lastExitCodeVariableBefore.Value } else { $null }
         . ([scriptblock]::Create($successHarness))
         Assert-Equal 42 $HarnessScopeProbe 'Agent 顶层包装必须保留普通变量。'
         Assert-Equal 99 (Invoke-HarnessProbe) 'Agent 顶层包装必须保留函数定义。'
@@ -824,7 +987,18 @@ try {
         . ([scriptblock]::Create($formatHarness))
         Assert-Equal $true $HarnessObservedSuccess 'Format-Table 输出不能导致 Agent 命令被误判为失败。'
         Assert-Match $HarnessObservedOutput 'DateTime' 'Format-Table 的文本输出必须进入有界收集器。'
-        Assert-Equal $nativePreferenceBefore $PSNativeCommandUseErrorActionPreference 'Harness 必须恢复用户原有的原生命令错误偏好。'
+        if ($nativePreferenceVariable) {
+            Assert-Equal $nativePreferenceBefore ([bool](Get-Variable PSNativeCommandUseErrorActionPreference).Value) 'Harness 必须恢复用户原有的原生命令错误偏好。'
+        } else {
+            Assert-Equal $null (Get-Variable PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) '5.1 Harness 不能创建宿主不支持的原生命令错误偏好。'
+        }
+        if ($PSVersionTable.PSVersion -lt [version]'7.3') {
+            $lastExitCodeVariableAfter = Get-Variable LASTEXITCODE -ErrorAction SilentlyContinue
+            Assert-Equal ($null -ne $lastExitCodeVariableBefore) ($null -ne $lastExitCodeVariableAfter) '5.1 Harness 必须恢复 LASTEXITCODE 是否存在的原状态。'
+            if ($lastExitCodeVariableBefore) {
+                Assert-Equal $lastExitCodeBefore ([int]$lastExitCodeVariableAfter.Value) '5.1 Harness 必须恢复用户原有的 LASTEXITCODE。'
+            }
+        }
     } finally {
         Remove-Item Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
         Remove-Item Function:\Invoke-HarnessProbe -ErrorAction SilentlyContinue
@@ -864,6 +1038,7 @@ try {
     Assert-Equal ([IO.Path]::GetFullPath($testProfile)) $installResult.ProfilePath '安装器必须返回实际写入的 Profile 路径。'
     $profileContent = Get-Content -LiteralPath $testProfile -Raw
     Assert-Match $profileContent ([regex]::Escape("Import-Module PSAITerminal -MinimumVersion '$releaseVersion'")) '安装器必须写入带最低版本的自动加载区块。'
+    Assert-Match $profileContent ([regex]::Escape("`$__psaiModuleRoot = '$installRoot'")) '安装器必须把实际模块根写入自动加载区块。'
     & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -ModuleRoot $installRoot -ProfilePath $testProfile | Out-Null
     $repeatedProfileContent = Get-Content -LiteralPath $testProfile -Raw
     Assert-Equal 1 @([regex]::Matches($repeatedProfileContent, 'PSAITerminal 自动加载（开始）')).Count '重复安装不能重复写入 Profile 区块。'
@@ -890,14 +1065,15 @@ try {
     Remove-Item -LiteralPath (Join-Path $repairInstall.InstalledPath 'old-stale.txt') -Force
     Assert-Throws { & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -ModuleRoot $installRoot -ProfilePath '.\relative.ps1' } '完整的 .ps1' '安装器必须拒绝相对 Profile 路径。'
     Assert-Throws { & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -ModuleRoot $installRoot -NoProfileIntegration -ProfilePath $testProfile } '不能同时使用' '安装器必须拒绝矛盾的 Profile 参数。'
-    $env:PSModulePath = "$installRoot$([IO.Path]::PathSeparator)$originalModulePath"
+    $env:PSModulePath = $originalModulePath
     $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'installer/config'
     $env:PSAI_DATA_HOME = Join-Path $testRoot 'installer/data'
     . $testProfile
     $installedModule = Get-Module PSAITerminal
-    $installComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+    $installComparison = if ($isWindowsHost) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     $installPrefix = [IO.Path]::GetFullPath($installRoot).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
     Assert-True ([IO.Path]::GetFullPath($installedModule.Path).StartsWith($installPrefix, $installComparison)) '安装后必须能从自定义 PSModulePath 按名称导入。'
+    Assert-True (@($env:PSModulePath -split [IO.Path]::PathSeparator) -contains [IO.Path]::GetFullPath($installRoot)) 'Profile 必须在宿主缺少用户模块路径时补回实际模块根。'
     Assert-True (Test-Path -LiteralPath (Join-Path $installedModule.ModuleBase 'Uninstall-PSAITerminal.ps1')) '发布目录必须包含卸载脚本。'
     Assert-True (Test-Path -LiteralPath (Join-Path $installedModule.ModuleBase 'zh-CN/about_PSAITerminal.help.txt')) '发布目录必须包含简体中文帮助主题。'
     Assert-True (Test-Path -LiteralPath (Join-Path $installedModule.ModuleBase 'en-US/about_PSAITerminal.help.txt')) '发布目录必须包含英文帮助主题。'
@@ -942,6 +1118,8 @@ try {
             $profileText = [IO.File]::ReadAllText($profilePath, [Text.Encoding]::UTF8)
             Assert-Match $profileText ([regex]::Escape("legacy café - $hostDirectory")) "Both 安装不能破坏 $hostDirectory Profile 的原始编码内容。"
             Assert-Equal 1 @([regex]::Matches($profileText, 'PSAITerminal 自动加载（开始）')).Count "Both 安装必须只写入一个 $hostDirectory Profile 区块。"
+            $expectedModuleRoot = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Modules"
+            Assert-Match $profileText ([regex]::Escape("`$__psaiModuleRoot = '$expectedModuleRoot'")) "Both 必须把 $hostDirectory 的实际模块根写入对应 Profile。"
         }
         & (Join-Path $moduleOutput 'Uninstall-PSAITerminal.ps1') -TargetHost Both | Out-Null
         foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {

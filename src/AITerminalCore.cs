@@ -684,7 +684,31 @@ public sealed class AITerminalBoundedTextCollector
 }
 
 /// <summary>
-/// 以固定上限读取 HTTP 内容，避免错误页或模型列表造成无界内存占用。
+/// 通过 PowerShell 5.1 与 PowerShell 7 共同具备的异步 API 发送 HTTP 请求。
+/// </summary>
+public static class AITerminalHttpTransport
+{
+    public static HttpResponseMessage Send(
+        HttpClient client,
+        HttpRequestMessage request,
+        HttpCompletionOption completionOption,
+        CancellationToken cancellationToken)
+    {
+        if (client is null)
+        {
+            throw new ArgumentNullException(nameof(client));
+        }
+        if (request is null)
+        {
+            throw new ArgumentNullException(nameof(request));
+        }
+
+        return client.SendAsync(request, completionOption, cancellationToken).GetAwaiter().GetResult();
+    }
+}
+
+/// <summary>
+/// 以固定上限读取 HTTP 内容，并提供两个 PowerShell 宿主共用的可取消流读取。
 /// </summary>
 public static class AITerminalHttpContent
 {
@@ -702,20 +726,86 @@ public static class AITerminalHttpContent
         return ReadStringCoreAsync(content, maximumCharacters, cancellationToken).GetAwaiter().GetResult();
     }
 
+    public static string? ReadLine(StreamReader reader, CancellationToken cancellationToken)
+    {
+        if (reader is null)
+        {
+            throw new ArgumentNullException(nameof(reader));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return WaitWithCancellationAsync(reader.ReadLineAsync(), cancellationToken).GetAwaiter().GetResult();
+    }
+
+    public static Stream ReadStream(HttpContent content, CancellationToken cancellationToken)
+    {
+        if (content is null)
+        {
+            throw new ArgumentNullException(nameof(content));
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return WaitWithCancellationAsync(content.ReadAsStreamAsync(), cancellationToken).GetAwaiter().GetResult();
+    }
+
+    private static async Task<T> WaitWithCancellationAsync<T>(Task<T> task, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled)
+        {
+            return await task.ConfigureAwait(false);
+        }
+
+        TaskCompletionSource<bool> cancellationSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        using CancellationTokenRegistration registration = cancellationToken.Register(
+            static state => ((TaskCompletionSource<bool>)state!).TrySetResult(true),
+            cancellationSource);
+        Task completedTask = await Task.WhenAny(task, cancellationSource.Task).ConfigureAwait(false);
+        if (!ReferenceEquals(completedTask, task))
+        {
+            ObserveAbandonedTask(task);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        return await task.ConfigureAwait(false);
+    }
+
+    private static void ObserveAbandonedTask<T>(Task<T> task)
+    {
+        _ = task.ContinueWith(
+            static completedTask =>
+            {
+                if (completedTask.Status == TaskStatus.RanToCompletion && completedTask.Result is IDisposable disposable)
+                {
+                    disposable.Dispose();
+                }
+                else if (completedTask.IsFaulted)
+                {
+                    _ = completedTask.Exception;
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
     private static async Task<string> ReadStringCoreAsync(
         HttpContent content,
         int maximumCharacters,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using Stream stream = await content.ReadAsStreamAsync().ConfigureAwait(false);
+        using Stream stream = await WaitWithCancellationAsync(
+            content.ReadAsStreamAsync(),
+            cancellationToken).ConfigureAwait(false);
         using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 8192);
         StringBuilder result = new(Math.Min(maximumCharacters, 8192));
         char[] buffer = new char[8192];
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            int read = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+            int read = await WaitWithCancellationAsync(
+                reader.ReadAsync(buffer, 0, buffer.Length),
+                cancellationToken).ConfigureAwait(false);
             if (read == 0)
             {
                 return result.ToString();
@@ -868,8 +958,10 @@ public static class PlatformCredentialStore
 public static class WindowsCredentialStore
 {
     private const uint GenericCredential = 1;
+    private const uint PersistSession = 1;
     private const uint PersistLocalMachine = 2;
     private const int ErrorNotFound = 1168;
+    private const int ErrorNoSuchLogonSession = 1312;
 
     public static bool IsAvailable
     {
@@ -911,7 +1003,19 @@ public static class WindowsCredentialStore
 
             if (!CredWrite(ref credential, 0))
             {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
+                int error = Marshal.GetLastWin32Error();
+                if (error != ErrorNoSuchLogonSession)
+                {
+                    throw new Win32Exception(error);
+                }
+
+                // 某些受限/网络登录会话没有本机持久凭据集，但仍支持当前会话凭据。
+                // 保留加密的 Credential Manager 存储，避免把密钥降级写入配置或明文。
+                credential.Persist = PersistSession;
+                if (!CredWrite(ref credential, 0))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
             }
         }
         finally

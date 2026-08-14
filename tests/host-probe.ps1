@@ -15,10 +15,21 @@ $env:PSAI_CONFIG_HOME = [IO.Path]::GetFullPath($ConfigPath)
 $env:PSAI_DATA_HOME = [IO.Path]::GetFullPath($DataPath)
 Import-Module $ModulePath -Force
 $module = Get-Module PSAITerminal
+$moduleSource = [IO.File]::ReadAllText((Join-Path $module.ModuleBase 'PSAITerminal.psm1'), [Text.Encoding]::UTF8)
 
 function Assert-Probe([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
+
+function Assert-ProbeThrows([scriptblock]$Action, [string]$Pattern, [string]$Message) {
+    try { & $Action; throw $Message }
+    catch { if ($_.Exception.Message -eq $Message -or $_.Exception.Message -notmatch $Pattern) { throw } }
+}
+
+Assert-Probe ($moduleSource -notmatch '\$client\.Send\s*\(') '模块不能调用 Windows PowerShell 5.1 缺失的 HttpClient.Send。'
+Assert-Probe ($moduleSource -notmatch 'ReadLineAsync\s*\(\s*\$CancellationToken') '模块不能调用 Windows PowerShell 5.1 缺失的可取消 ReadLineAsync 重载。'
+Assert-Probe ($moduleSource -notmatch '\.Content\.ReadAsStream\s*\(') '模块不能调用 Windows PowerShell 5.1 缺失的 HttpContent.ReadAsStream。'
+Assert-Probe ($moduleSource -match '\$PSVersionTable\.PSVersion\s*-ge\s*\[version\]\x27?7\.3') 'Agent Harness 必须在 5.1 中跳过 PowerShell 7 专属原生命令错误偏好变量。'
 
 $status = Get-PSAIIntegrationStatus
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
@@ -39,6 +50,64 @@ $risks = @(
     [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell','Remove-Item C:\probe.txt').ToString()
 )
 Assert-Probe (($risks -join ',') -eq 'Low,Medium,High') '低/中/高风险分类与安全约定不一致。'
+
+$lineBytes = [Text.Encoding]::UTF8.GetBytes("alpha`nbeta")
+$lineStream = [IO.MemoryStream]::new($lineBytes)
+$lineReader = [IO.StreamReader]::new($lineStream)
+try {
+    Assert-Probe (([PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, [Threading.CancellationToken]::None)) -eq 'alpha') '兼容流读取未返回第一行。'
+    Assert-Probe (([PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, [Threading.CancellationToken]::None)) -eq 'beta') '兼容流读取未返回末行。'
+    $lineCancellation = [Threading.CancellationTokenSource]::new()
+    try {
+        $lineCancellation.Cancel()
+        Assert-ProbeThrows { [PSAITerminal.AITerminalHttpContent]::ReadLine($lineReader, $lineCancellation.Token) } 'cancel|取消|canceled' '兼容流读取必须响应取消令牌。'
+    } finally { $lineCancellation.Dispose() }
+} finally { $lineReader.Dispose(); $lineStream.Dispose() }
+
+$streamContent = [Net.Http.StringContent]::new('stream-ok')
+$contentStream = $null
+$contentReader = $null
+try {
+    $contentStream = [PSAITerminal.AITerminalHttpContent]::ReadStream($streamContent, [Threading.CancellationToken]::None)
+    $contentReader = [IO.StreamReader]::new($contentStream)
+    Assert-Probe ($contentReader.ReadToEnd() -eq 'stream-ok') '兼容 HTTP 流入口未返回完整内容。'
+} finally {
+    if ($contentReader) { $contentReader.Dispose() }
+    elseif ($contentStream) { $contentStream.Dispose() }
+    $streamContent.Dispose()
+}
+
+$harnessScript = & $module {
+    New-AITopLevelHarnessScript "[pscustomobject]@{RunId='host-probe';StepId='host-probe';ApprovalDigest=('a'*64);ApprovalRevision=1;Command='Get-Date | Out-Null'}"
+}
+function global:Start-PSAIToolExecution {
+    param($RunId,$StepId,$ApprovalDigest,[long]$ApprovalRevision)
+    [void]$RunId; [void]$StepId; [void]$ApprovalDigest; [void]$ApprovalRevision
+}
+function global:Complete-PSAIToolExecution {
+    param($RunId,$StepId,[bool]$Succeeded,$Output)
+    [void]$RunId; [void]$StepId
+    $global:HostProbeHarnessSuccess = $Succeeded
+    $global:HostProbeHarnessOutput = $Output
+}
+try {
+    . ([scriptblock]::Create($harnessScript))
+    Assert-Probe ($global:HostProbeHarnessSuccess -eq $true) 'Agent Harness 在当前宿主中未能完成无副作用命令。'
+} finally {
+    Remove-Item Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
+    Remove-Variable HostProbeHarnessSuccess,HostProbeHarnessOutput -Scope Global -ErrorAction SilentlyContinue
+}
+
+$sendClient = [Net.Http.HttpClient]::new()
+$sendRequest = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Get, 'http://127.0.0.1:1/')
+$sendCancellation = [Threading.CancellationTokenSource]::new()
+try {
+    $sendCancellation.Cancel()
+    Assert-ProbeThrows {
+        [void][PSAITerminal.AITerminalHttpTransport]::Send(
+            $sendClient, $sendRequest, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $sendCancellation.Token)
+    } 'cancel|取消|canceled' '兼容 HTTP 发送入口必须在当前宿主中可调用并响应取消令牌。'
+} finally { $sendCancellation.Dispose(); $sendRequest.Dispose(); $sendClient.Dispose() }
 
 function Read-ProbeText([string]$Path) {
     & $module { param($probePath) Read-AITextFile $probePath } $Path

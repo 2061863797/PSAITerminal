@@ -35,6 +35,12 @@ DIAGNOSTICS
     PSReadLine, and shortcut integration.
     Test-PSAIConfiguration -Online sends one minimal model request after local checks.
 
+CREDENTIALS
+    API keys are stored in Windows Credential Manager and are not written to JSON.
+    The module first requests machine persistence. In a restricted logon session where
+    Windows returns ERROR_NO_SUCH_LOGON_SESSION (1312), it safely uses a credential
+    scoped to the current logon session instead; it never falls back to plaintext.
+
 COMMON COMMANDS
     Get-PSAIModel
     Get-PSAISession

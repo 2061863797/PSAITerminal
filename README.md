@@ -72,7 +72,7 @@ Windows PowerShell 5.1 不提供 PowerShell 7 专属的原生预测器/反馈 AP
 
 支持 OpenAI Chat、OpenAI Responses、Anthropic Messages、Gemini Native `generateContent` 和 Ollama。OpenAI 兼容地址可以写成包含或不包含 `/v1` 的形式，也可以带反向代理路径前缀。
 
-新增模型时，模块会先尝试读取服务端模型列表供选择；服务不提供列表接口时仍可手动输入模型 ID。API Key 不写入 JSON 配置，Windows 使用 Credential Manager。密钥库不可用时，交互设置会询问是否仅在当前 PowerShell 会话使用 API Key；命令行可显式使用 `New-PSAIModel -SessionOnly`。
+新增模型时，模块会先尝试读取服务端模型列表供选择；服务不提供列表接口时仍可手动输入模型 ID。API Key 不写入 JSON 配置，Windows 使用 Credential Manager，默认尝试跨登录会话持久化；受限登录会话若返回 1312，则安全降级为当前登录会话凭据（不会写入配置或明文）。密钥库完全不可用时，交互设置会询问是否仅在当前 PowerShell 会话使用 API Key；命令行可显式使用 `New-PSAIModel -SessionOnly`。
 
 连接检查：
 
@@ -125,5 +125,6 @@ ai resume <RunId>
 
 ```powershell
 ./build.ps1 -Restore -Configuration Release -Package
+./build.ps1 -Configuration Release -Package -Prerelease preview1
 ./tests/run.ps1
 ```

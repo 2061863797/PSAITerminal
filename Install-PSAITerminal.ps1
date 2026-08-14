@@ -348,11 +348,17 @@ if (-not (Get-Command Get-PSAIIntegrationStatus -ErrorAction SilentlyContinue)) 
         $profileContent = if (Test-Path -LiteralPath $profilePath) { Read-PSAITextFile $profilePath } else { '' }
         $block = @'
 # PSAITerminal 自动加载（开始）
+$__psaiModuleRoot = '{MODULE_ROOT}'
+if (@($env:PSModulePath -split [IO.Path]::PathSeparator) -notcontains $__psaiModuleRoot) {
+    $env:PSModulePath = $__psaiModuleRoot + [IO.Path]::PathSeparator + $env:PSModulePath
+}
 try { Import-Module PSAITerminal -MinimumVersion '{VERSION}' -ErrorAction Stop }
 catch { Write-Warning "PSAITerminal 自动加载失败：$($_.Exception.Message)" }
+Remove-Variable __psaiModuleRoot -ErrorAction SilentlyContinue
 # PSAITerminal 自动加载（结束）
 '@
-        $block = $block.Replace('{VERSION}', $moduleVersion)
+        $escapedModuleRoot = $resolvedModuleRoot.Replace("'", "''")
+        $block = $block.Replace('{MODULE_ROOT}', $escapedModuleRoot).Replace('{VERSION}', $moduleVersion)
         $profileUpdate = Get-PSAIProfileUpdate $profileContent $block
         if ($profileUpdate.RepairNeeded -and (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
             $profileBackup = "$profilePath.psaiterminal-backup.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')).$([guid]::NewGuid().ToString('N'))"

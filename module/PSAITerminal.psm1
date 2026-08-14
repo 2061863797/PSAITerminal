@@ -40,6 +40,9 @@ $script:PSAIHostReadLine = $null
 $script:NextReadLineAction = $null
 $script:OriginalPrompt = $null
 $script:PSAIPromptWrapper = $null
+$script:PromptInvocationActive = $false
+$script:PromptStateVariableName = '__PSAITerminalPromptIntegrationState'
+$script:PromptOwnerToken = [guid]::NewGuid().ToString('N')
 $script:CurrentSession = $null
 $script:ConfigLoadFailed = $false
 $script:LastSecretStoreError = $null
@@ -201,16 +204,71 @@ function Get-AIPromptPrefix {
     }
 }
 
+function Get-AIDefaultPromptText {
+    $location = [string]$ExecutionContext.SessionState.Path.CurrentLocation
+    if ([string]::IsNullOrWhiteSpace($location)) { $location = [Environment]::CurrentDirectory }
+    "PS $location> "
+}
+
+function Get-AIPromptIntegrationState {
+    [AppDomain]::CurrentDomain.GetData($script:PromptStateVariableName)
+}
+
+function Test-AISamePromptScriptBlock([AllowNull()][scriptblock]$Left, [AllowNull()][scriptblock]$Right) {
+    if (-not $Left -or -not $Right) { return $false }
+    if ([object]::ReferenceEquals($Left, $Right)) { return $true }
+    [string]::Equals($Left.ToString(), $Right.ToString(), [StringComparison]::Ordinal)
+}
+
+function Test-AILegacyPromptWrapper([AllowNull()][scriptblock]$ScriptBlock) {
+    if (-not $ScriptBlock) { return $false }
+    $text = $ScriptBlock.ToString()
+    $text.Contains('Get-Module PSAITerminal') -and $text.Contains('Invoke-AIWrappedPrompt')
+}
+
+function Find-AILegacyOriginalPrompt {
+    foreach ($loadedModule in @(Get-Module PSAITerminal)) {
+        try {
+            $candidate = & $loadedModule {
+                [pscustomobject]@{
+                    OriginalPrompt = $script:OriginalPrompt
+                    PromptWrapper = $script:PSAIPromptWrapper
+                }
+            }
+            if ($candidate.OriginalPrompt -and -not (Test-AILegacyPromptWrapper $candidate.OriginalPrompt)) {
+                return $candidate.OriginalPrompt
+            }
+        } catch {
+            Write-Debug "无法读取旧 PSAITerminal 实例的 Prompt 状态：$($_.Exception.Message)"
+        }
+    }
+    $null
+}
+
 function Invoke-AIWrappedPrompt {
     $lastSuccess = $?
-    $prefix = Get-AIPromptPrefix
-    if ($prefix) {
-        Write-AIColoredHost $prefix DarkCyan -NoNewline
+    $state = Get-AIPromptIntegrationState
+    if ($script:PromptInvocationActive -or ($state -and [bool]$state.InvocationActive)) {
+        return Get-AIDefaultPromptText
     }
-    if ($script:OriginalPrompt) {
-        if ($lastSuccess) { $null = $true }
-        else { Write-Error 'PSAITerminal prompt status preservation' -ErrorAction Ignore }
-        & $script:OriginalPrompt
+
+    $script:PromptInvocationActive = $true
+    if ($state) { $state.InvocationActive = $true }
+    try {
+        $prefix = Get-AIPromptPrefix
+        if ($prefix) {
+            Write-AIColoredHost $prefix DarkCyan -NoNewline
+        }
+        if ($script:OriginalPrompt) {
+            if ($lastSuccess) { $null = $true }
+            else { Write-Error 'PSAITerminal prompt status preservation' -ErrorAction Ignore }
+            & $script:OriginalPrompt
+        } else {
+            Get-AIDefaultPromptText
+        }
+    } finally {
+        if ($state) { $state.InvocationActive = $false }
+        $script:PromptInvocationActive = $false
     }
 }
 
@@ -219,21 +277,59 @@ function Register-AIPromptIntegration {
     $current = Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue
     if (-not $current) { return }
     if ($script:PSAIPromptWrapper -and [object]::ReferenceEquals($current.ScriptBlock, $script:PSAIPromptWrapper)) { return }
-    $script:OriginalPrompt = $current.ScriptBlock
-    $script:PSAIPromptWrapper = {
-        $module = Get-Module PSAITerminal | Select-Object -First 1
-        if ($module) { & $module { Invoke-AIWrappedPrompt } }
+
+    $state = Get-AIPromptIntegrationState
+    if ($state -and (Test-AISamePromptScriptBlock $current.ScriptBlock $state.PromptWrapper)) {
+        $script:OriginalPrompt = $state.OriginalPrompt
+    } elseif (Test-AILegacyPromptWrapper $current.ScriptBlock) {
+        $script:OriginalPrompt = Find-AILegacyOriginalPrompt
+    } else {
+        $script:OriginalPrompt = $current.ScriptBlock
     }
+    if (-not $script:OriginalPrompt) {
+        $script:OriginalPrompt = { Get-AIDefaultPromptText }
+    }
+
+    $module = $ExecutionContext.SessionState.Module
+    $script:PSAIPromptWrapper = {
+        $state = [AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')
+        if ($state -and [bool]$state.InvocationActive) {
+            $location = [string]$ExecutionContext.SessionState.Path.CurrentLocation
+            if ([string]::IsNullOrWhiteSpace($location)) { $location = [Environment]::CurrentDirectory }
+            "PS $location> "
+        } elseif ($state -and $state.Owner) {
+            & $state.Owner { Invoke-AIWrappedPrompt }
+        } else {
+            $location = [string]$ExecutionContext.SessionState.Path.CurrentLocation
+            if ([string]::IsNullOrWhiteSpace($location)) { $location = [Environment]::CurrentDirectory }
+            "PS $location> "
+        }
+    }
+    $state = [pscustomobject]@{
+        Owner = $module
+        OwnerToken = $script:PromptOwnerToken
+        OriginalPrompt = $script:OriginalPrompt
+        PromptWrapper = $script:PSAIPromptWrapper
+        OriginalReadLine = $script:OriginalPSConsoleHostReadLine
+        ReadLineWrapper = $script:PSAIHostReadLine
+        InvocationActive = $false
+    }
+    [AppDomain]::CurrentDomain.SetData($script:PromptStateVariableName, $state)
     Set-Item -LiteralPath Function:\global:prompt -Value $script:PSAIPromptWrapper
 }
 
 function Unregister-AIPromptIntegration {
     $current = Get-Command prompt -CommandType Function -ErrorAction SilentlyContinue
-    if ($script:OriginalPrompt -and $current -and [object]::ReferenceEquals($current.ScriptBlock, $script:PSAIPromptWrapper)) {
-        Set-Item -LiteralPath Function:\global:prompt -Value $script:OriginalPrompt
+    $state = Get-AIPromptIntegrationState
+    if ($state -and $state.OwnerToken -eq $script:PromptOwnerToken) {
+        if ($script:OriginalPrompt -and $current -and (Test-AISamePromptScriptBlock $current.ScriptBlock $state.PromptWrapper)) {
+            Set-Item -LiteralPath Function:\global:prompt -Value $script:OriginalPrompt
+        }
+        [AppDomain]::CurrentDomain.SetData($script:PromptStateVariableName, $null)
     }
     $script:OriginalPrompt = $null
     $script:PSAIPromptWrapper = $null
+    $script:PromptInvocationActive = $false
 }
 
 function Get-AIUserHomeDirectory {
@@ -702,8 +798,12 @@ function Get-AISessionPath([string]$Id) {
     Join-Path $script:SessionDirectory "$Id.json"
 }
 
-function Save-AISession([Collections.IDictionary]$Session = $script:CurrentSession, [switch]$LockHeld) {
+function Save-AISession([Collections.IDictionary]$Session = $script:CurrentSession, [switch]$LockHeld,
+    [switch]$RevisionAlreadyValidated) {
     if (-not $Session) { return }
+    if ($RevisionAlreadyValidated -and -not $LockHeld) {
+        throw '只有在持有会话文件锁时才能跳过修订号复核。'
+    }
     $path = Get-AISessionPath ([string]$Session.id)
     if (-not $LockHeld) {
         return Invoke-AIWithFileLock $path { Save-AISession $Session -LockHeld }
@@ -712,10 +812,12 @@ function Save-AISession([Collections.IDictionary]$Session = $script:CurrentSessi
     $previousUpdatedUtc = $Session.updatedUtc
     $previousRevision = Get-AIRevision $Session '会话'
     try {
-        $storedRevision = Get-AIStoredRevision $path '会话' $script:MaximumSessionBytes
-        if (($storedRevision -ge 0 -and $storedRevision -ne $previousRevision) -or
-            ($storedRevision -lt 0 -and $previousRevision -ne 0)) {
-            throw '会话已被另一个 PowerShell 进程修改。请重试当前操作。'
+        if (-not $RevisionAlreadyValidated) {
+            $storedRevision = Get-AIStoredRevision $path '会话' $script:MaximumSessionBytes
+            if (($storedRevision -ge 0 -and $storedRevision -ne $previousRevision) -or
+                ($storedRevision -lt 0 -and $previousRevision -ne 0)) {
+                throw '会话已被另一个 PowerShell 进程修改。请重试当前操作。'
+            }
         }
         if ($Session.turns -isnot [Collections.IList] -or $Session.turns -is [string] -or $Session.turns.Count -gt 2000) {
             throw '会话 turns 必须是最多包含 2000 项的数组。'
@@ -814,7 +916,33 @@ function Initialize-AISessionState {
     }
 }
 
-function Add-AISessionTurn([string]$Role, [string]$Content, [string]$Kind = 'message', [hashtable]$Metadata = @{}) {
+function Add-AISessionUsageValues([Collections.IDictionary]$Session, [long]$InputTokens, [long]$OutputTokens) {
+    if ($InputTokens -lt 0 -or $OutputTokens -lt 0) { throw '模型 Token 用量不能为负数。' }
+    $newInputTokens = [decimal][long]$Session.inputTokens + [decimal]$InputTokens
+    $newOutputTokens = [decimal][long]$Session.outputTokens + [decimal]$OutputTokens
+    if ($newInputTokens -gt [long]::MaxValue -or $newOutputTokens -gt [long]::MaxValue) {
+        throw '会话 Token 用量超过 Int64 上限。'
+    }
+    $Session.inputTokens = [long]$newInputTokens
+    $Session.outputTokens = [long]$newOutputTokens
+}
+
+function Update-AISessionUsage([long]$InputTokens, [long]$OutputTokens) {
+    if ($InputTokens -lt 0 -or $OutputTokens -lt 0) { throw '模型 Token 用量不能为负数。' }
+    if (-not $script:CurrentSession -or ($InputTokens -eq 0 -and $OutputTokens -eq 0)) { return }
+    $sessionId = [string]$script:CurrentSession.id
+    $path = Get-AISessionPath $sessionId
+    Invoke-AIWithFileLock $path {
+        $latest = Import-AISession $sessionId
+        if (-not $latest) { throw "会话不存在或无法读取：$sessionId" }
+        Add-AISessionUsageValues $latest $InputTokens $OutputTokens
+        Save-AISession $latest -LockHeld -RevisionAlreadyValidated
+        $script:CurrentSession = $latest
+    }
+}
+
+function Add-AISessionTurn([string]$Role, [string]$Content, [string]$Kind = 'message', [hashtable]$Metadata = @{},
+    [long]$InputTokens = 0, [long]$OutputTokens = 0) {
     if (-not $script:CurrentSession) { return }
     $safeContent = Protect-AIText $Content 65536
     $turn = [ordered]@{
@@ -832,7 +960,8 @@ function Add-AISessionTurn([string]$Role, [string]$Content, [string]$Kind = 'mes
         if (-not $latest) { throw "会话不存在或无法读取：$sessionId" }
         if ($latest.turns.Count -ge 2000) { throw '会话已达到 2000 个 Turn 上限，请新建会话后继续。' }
         $latest.turns = @($latest.turns) + @($turn)
-        Save-AISession $latest -LockHeld
+        Add-AISessionUsageValues $latest $InputTokens $OutputTokens
+        Save-AISession $latest -LockHeld -RevisionAlreadyValidated
         $script:CurrentSession = $latest
         $turn
     }
@@ -981,7 +1110,9 @@ function Get-AICommandRisk([string]$Command) {
 function Get-AIApprovalDigest([string]$RunId, [string]$StepId, [string]$Command) {
     $payload = "$($RunId.Length):$RunId$($StepId.Length):$StepId$($Command.Length):$Command"
     $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
-    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $hasher.ComputeHash($bytes) } finally { $hasher.Dispose() }
+    ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
 function Get-AIDefaultEndpoint([string]$Protocol) {
@@ -1262,7 +1393,8 @@ function Get-AIRemoteModels {
     $response = $null
     try {
         Add-AIAuthenticationHeaders $request $Protocol $Secret
-        $response = $client.Send($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $requestToken)
+        $response = [PSAITerminal.AITerminalHttpTransport]::Send(
+            $client, $request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $requestToken)
         $body = [PSAITerminal.AITerminalHttpContent]::ReadString($response.Content, 8MB, $requestToken)
         $safeBody = [PSAITerminal.AITerminalSecurity]::ProtectText($body, [string[]]@($Secret), 2048)
         if (-not $response.IsSuccessStatusCode) {
@@ -1460,7 +1592,7 @@ function Write-AIStreamText([string]$Text, [switch]$First) {
 function Read-AIStreamPayloads([IO.StreamReader]$Reader, [string]$Protocol, [Threading.CancellationToken]$CancellationToken) {
     $data = [Collections.Generic.List[string]]::new()
     $dataCharacters = 0
-    while ($null -ne ($line = $Reader.ReadLineAsync($CancellationToken).AsTask().GetAwaiter().GetResult())) {
+    while ($null -ne ($line = [PSAITerminal.AITerminalHttpContent]::ReadLine($Reader, $CancellationToken))) {
         if ($line.Length -gt 1MB) { throw '模型流式响应的单行数据超过 1 MiB 上限。' }
         if ($Protocol -eq 'Ollama' -and $line -and -not $line.StartsWith('data:') -and
             -not $line.StartsWith('event:') -and -not $line.StartsWith('id:') -and -not $line.StartsWith('retry:')) {
@@ -1515,13 +1647,15 @@ function Invoke-AIModelText {
         $request.Content = [Net.Http.StringContent]::new($json, [Text.Encoding]::UTF8, 'application/json')
         Add-AIAuthenticationHeaders $request ([string]$Model.protocol) $secret
         try {
-            $response = $client.Send($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $requestToken)
+            $response = [PSAITerminal.AITerminalHttpTransport]::Send(
+                $client, $request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $requestToken)
             $status = [int]$response.StatusCode
             if (($status -in @(408,429) -or $status -in 500..599) -and $attempt -lt 2) {
                 [void][PSAITerminal.AITerminalHttpContent]::ReadString($response.Content, 1MB, $requestToken)
                 $response.Dispose(); $request.Dispose(); $response=$null; $request=$null
                 $attempt++
-                [Threading.Tasks.Task]::Delay([Math]::Min(2000, 250 * [Math]::Pow(2, $attempt)), $requestToken).GetAwaiter().GetResult()
+                [void]([Threading.Tasks.Task]::Delay(
+                    [Math]::Min(2000, 250 * [Math]::Pow(2, $attempt)), $requestToken).GetAwaiter().GetResult())
                 continue
             }
             if (-not $response.IsSuccessStatusCode) {
@@ -1546,11 +1680,13 @@ function Invoke-AIModelText {
     $toolCalls = [ordered]@{}
     $toolItemMap = @{}
     $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
-    $reader = [IO.StreamReader]::new($response.Content.ReadAsStream())
+    $reader = [IO.StreamReader]::new(
+        [PSAITerminal.AITerminalHttpContent]::ReadStream($response.Content, $requestToken))
     try {
-        foreach ($payload in (Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken)) {
-            if (-not $payload) { continue }
-            if ($payload -eq '[DONE]') { $terminal = $true; continue }
+        Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken | ForEach-Object {
+            $payload = [string]$_
+            if (-not $payload) { return }
+            if ($payload -eq '[DONE]') { $terminal = $true; return }
             try { $chunk = $payload | ConvertFrom-Json -ErrorAction Stop }
             catch { throw "模型接口返回了无法解析的流数据：$(Protect-AIText $payload 1024)" }
             $parsed++
@@ -2204,8 +2340,7 @@ function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.
         $summaryResult = Invoke-AIModelText -Model $Model -Prompt $summaryPrompt -NoRender -CancellationToken $CancellationToken
         $script:CurrentSession.summary = Protect-AIText $summaryResult.Text 16384
         $script:CurrentSession.compactedTurnCount = $targetCount
-        $script:CurrentSession.inputTokens = [long]$script:CurrentSession.inputTokens + [long]$summaryResult.InputTokens
-        $script:CurrentSession.outputTokens = [long]$script:CurrentSession.outputTokens + [long]$summaryResult.OutputTokens
+        Add-AISessionUsageValues $script:CurrentSession ([long]$summaryResult.InputTokens) ([long]$summaryResult.OutputTokens)
         Save-AISession
     } catch {
         $script:CurrentSession.summary = $previousSummary
@@ -2223,19 +2358,6 @@ function Invoke-AISessionModel([Collections.IDictionary]$Model, [string]$Instruc
     $context = Get-AISessionContextText
     $prompt = if ($context) { "以下是持久会话上下文：`n$context`n`n当前要求：$Instruction" } else { $Instruction }
     $result = Invoke-AIModelText -Model $Model -Prompt $prompt -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
-    if ($script:CurrentSession) {
-        $previousInputTokens = [long]$script:CurrentSession.inputTokens
-        $previousOutputTokens = [long]$script:CurrentSession.outputTokens
-        try {
-            $script:CurrentSession.inputTokens = $previousInputTokens + [long]$result.InputTokens
-            $script:CurrentSession.outputTokens = $previousOutputTokens + [long]$result.OutputTokens
-            Save-AISession
-        } catch {
-            $script:CurrentSession.inputTokens = $previousInputTokens
-            $script:CurrentSession.outputTokens = $previousOutputTokens
-            throw
-        }
-    }
     $result
 }
 
@@ -2480,6 +2602,7 @@ function Show-AIToolApproval([Collections.IDictionary]$Run, [Collections.IDictio
             $model = Get-AIActiveModel
             try {
                 $explanation = Invoke-AISessionModel $model "重新解释用户编辑后的命令，只返回简短说明：$edited" -NoRender -CancellationToken $CancellationToken
+                Update-AISessionUsage ([long]$explanation.InputTokens) ([long]$explanation.OutputTokens)
                 $Proposal.purpose = Protect-AIText $explanation.Text 4096
             } catch {
                 Write-Warning "重新解释失败，保留编辑后的命令供再次确认：$($_.Exception.Message)"
@@ -2513,7 +2636,12 @@ function Invoke-AIHarnessModelStep([Collections.IDictionary]$Run, [Threading.Can
     if ($RepairMessage) { $instruction += "`n上一次工具调用无效：$RepairMessage。请只修正一次。" }
     Set-AIRunState $Run 'Streaming' @{model=$model.name}
     $response = Invoke-AISessionModel $model $instruction -EnableTools -CancellationToken $CancellationToken
-    if ($response.Text) { Add-AISessionTurn 'assistant' $response.Text 'message' @{runId=$Run.id} | Out-Null }
+    $usagePersisted = $false
+    if ($response.Text) {
+        Add-AISessionTurn 'assistant' $response.Text 'message' @{runId=$Run.id} `
+            -InputTokens ([long]$response.InputTokens) -OutputTokens ([long]$response.OutputTokens) | Out-Null
+        $usagePersisted = $true
+    }
     $calls = @($response.ToolCalls)
     if ($calls.Count -eq 0) {
         $Run.finalText = Protect-AIText $response.Text 65536
@@ -2524,12 +2652,19 @@ function Invoke-AIHarnessModelStep([Collections.IDictionary]$Run, [Threading.Can
         if ($calls.Count -ne 1) { throw '每一步只能调用一个工具。' }
         $proposal = ConvertFrom-AIToolCall $calls[0]
     } catch {
+        if (-not $usagePersisted) {
+            Update-AISessionUsage ([long]$response.InputTokens) ([long]$response.OutputTokens)
+            $usagePersisted = $true
+        }
         if (-not $RepairMessage) { return Invoke-AIHarnessModelStep $Run $CancellationToken $_.Exception.Message }
         Set-AIRunState $Run 'Failed' @{reason='InvalidToolCall';message=(Protect-AIText $_.Exception.Message 1024)}
         throw '模型连续两次返回无效工具调用，已停止且没有执行命令。'
     }
     $Run.stepCount = [int]$Run.stepCount + 1
-    Add-AISessionTurn 'assistant' ($proposal | ConvertTo-Json -Depth 10 -Compress) 'tool_proposal' @{runId=$Run.id;toolCallId=$proposal.id} | Out-Null
+    $proposalInputTokens = if ($usagePersisted) { 0L } else { [long]$response.InputTokens }
+    $proposalOutputTokens = if ($usagePersisted) { 0L } else { [long]$response.OutputTokens }
+    Add-AISessionTurn 'assistant' ($proposal | ConvertTo-Json -Depth 10 -Compress) 'tool_proposal' `
+        @{runId=$Run.id;toolCallId=$proposal.id} -InputTokens $proposalInputTokens -OutputTokens $proposalOutputTokens | Out-Null
     $proposal.risk = [string](Get-AICommandRisk ([string]$proposal.command))
     $proposal.stepId = [guid]::NewGuid().ToString('N')
     $Run.pendingProposal = $proposal
@@ -2684,7 +2819,10 @@ function Invoke-PSAI {
     $model = Get-AIActiveModel
     Add-AISessionTurn 'user' $text 'message' | Out-Null
     $result = Invoke-AISessionModel -Model $model -Instruction '回答用户最后一条消息，不要调用工具。' -CancellationToken $CancellationToken
-    if ($result.Text) { Add-AISessionTurn 'assistant' $result.Text 'message' | Out-Null }
+    if ($result.Text) {
+        Add-AISessionTurn 'assistant' $result.Text 'message' @{} `
+            -InputTokens ([long]$result.InputTokens) -OutputTokens ([long]$result.OutputTokens) | Out-Null
+    }
 }
 
 function Show-PSAIResultExplanation {
@@ -2709,7 +2847,10 @@ function Show-PSAIResultExplanation {
     }
     Add-AISessionTurn 'user' $prompt 'explanation_request' | Out-Null
     $result = Invoke-AISessionModel -Model $model -Instruction '解释最近一次命令和结果，不要调用工具。'
-    if ($result.Text) { Add-AISessionTurn 'assistant' $result.Text 'explanation' | Out-Null }
+    if ($result.Text) {
+        Add-AISessionTurn 'assistant' $result.Text 'explanation' @{} `
+            -InputTokens ([long]$result.InputTokens) -OutputTokens ([long]$result.OutputTokens) | Out-Null
+    }
 }
 
 function New-AITopLevelHarnessScript([string]$StartExpression) {
@@ -2732,11 +2873,26 @@ try {
         ${EXECUTION_STATE} = [ordered]@{
             LastSuccess = $false
             HadError = $false
-            PreviousNativePreference = $PSNativeCommandUseErrorActionPreference
+            NativePreferenceAvailable = $false
+            PreviousNativePreference = $null
+            LastExitCodeTracked = $false
+            LastExitCodeAvailable = $false
+            PreviousLastExitCode = $null
         }
         ${CODE} = [string]${STEP}.Command + [Environment]::NewLine + '${EXECUTION_STATE}.LastSuccess=$?'
         try {
-            $PSNativeCommandUseErrorActionPreference = $true
+            if ($PSVersionTable.PSVersion -ge [version]'7.3') {
+                ${EXECUTION_STATE}.NativePreferenceAvailable = $true
+                ${EXECUTION_STATE}.PreviousNativePreference = [bool]$PSNativeCommandUseErrorActionPreference
+                $PSNativeCommandUseErrorActionPreference = $true
+            } else {
+                ${EXECUTION_STATE}.LastExitCodeTracked = $true
+                ${EXECUTION_STATE}.LastExitCodeAvailable = $null -ne (Get-Variable LASTEXITCODE -ErrorAction SilentlyContinue)
+                if (${EXECUTION_STATE}.LastExitCodeAvailable) {
+                    ${EXECUTION_STATE}.PreviousLastExitCode = [int](Get-Variable LASTEXITCODE).Value
+                }
+                $LASTEXITCODE = 0
+            }
             . ([scriptblock]::Create(${CODE})) *>&1 | ForEach-Object {
                 if ($_ -is [Management.Automation.ErrorRecord]) { ${EXECUTION_STATE}.HadError = $true }
                 $_
@@ -2744,13 +2900,24 @@ try {
                 ${COLLECTOR}.Append($_ + [Environment]::NewLine)
                 $_ | Out-Host
             }
+            if (${EXECUTION_STATE}.LastExitCodeTracked -and [int]$LASTEXITCODE -ne 0) {
+                ${EXECUTION_STATE}.HadError = $true
+            }
         } catch {
             ${EXECUTION_STATE}.HadError = $true
             ${EXECUTION_STATE}.LastSuccess = $false
             ${COLLECTOR}.Append(($_ | Out-String))
             $_ | Out-Host
         } finally {
-            $PSNativeCommandUseErrorActionPreference = [bool]${EXECUTION_STATE}.PreviousNativePreference
+            if (${EXECUTION_STATE}.NativePreferenceAvailable) {
+                $PSNativeCommandUseErrorActionPreference = [bool]${EXECUTION_STATE}.PreviousNativePreference
+            } elseif (${EXECUTION_STATE}.LastExitCodeTracked) {
+                if (${EXECUTION_STATE}.LastExitCodeAvailable) {
+                    $LASTEXITCODE = [int]${EXECUTION_STATE}.PreviousLastExitCode
+                } else {
+                    Remove-Variable LASTEXITCODE -Scope 0 -ErrorAction SilentlyContinue
+                }
+            }
         }
         ${SUCCESS} = [bool]${EXECUTION_STATE}.LastSuccess -and -not [bool]${EXECUTION_STATE}.HadError
         ${STEP} = Complete-PSAIToolExecution -RunId ([string]${STEP}.RunId) -StepId ([string]${STEP}.StepId) -Succeeded:([bool]${SUCCESS}) -Output (${COLLECTOR}.GetText())
@@ -2944,6 +3111,16 @@ function Invoke-AIEnterHandler {
     [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
 }
 
+function Invoke-AIHostReadLine([bool]$LastRunStatus) {
+    if (-not $script:OriginalPSConsoleHostReadLine) {
+        throw 'PSAITerminal 无法找到宿主原始输入读取函数。'
+    }
+    if ($LastRunStatus) { $null = $true }
+    else { Write-Error 'PSAITerminal input status preservation' -ErrorAction Ignore }
+    $line = & $script:OriginalPSConsoleHostReadLine
+    ConvertTo-AISubmittedLine $line
+}
+
 function Get-AIPSReadLineKeyHandler([string]$Key) {
     $command = Get-Command Get-PSReadLineKeyHandler -ErrorAction SilentlyContinue
     if (-not $command) { return $null }
@@ -2979,14 +3156,22 @@ function Register-AIPSReadLineIntegration {
 
     $readLineCommand = Get-Command PSConsoleHostReadLine -CommandType Function -ErrorAction SilentlyContinue
     if (-not $readLineCommand) { return }
-    $script:OriginalPSConsoleHostReadLine = $readLineCommand.ScriptBlock
+    $state = Get-AIPromptIntegrationState
+    if ($state -and $state.PSObject.Properties['ReadLineWrapper'] -and
+        (Test-AISamePromptScriptBlock $readLineCommand.ScriptBlock $state.ReadLineWrapper)) {
+        $script:OriginalPSConsoleHostReadLine = $state.OriginalReadLine
+    } else {
+        $script:OriginalPSConsoleHostReadLine = $readLineCommand.ScriptBlock
+    }
     $script:PSAIHostReadLine = [scriptblock]::Create(@'
 [System.Diagnostics.DebuggerHidden()]
 param()
 $lastRunStatus = $?
 Microsoft.PowerShell.Core\Set-StrictMode -Off
-$line = [Microsoft.PowerShell.PSConsoleReadLine]::ReadLine($host.Runspace, $ExecutionContext, $lastRunStatus)
-& (Get-Module PSAITerminal) { param($submittedLine) ConvertTo-AISubmittedLine $submittedLine } $line
+$state = [AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')
+$module = if ($state -and $state.Owner) { $state.Owner } else { Get-Module PSAITerminal | Select-Object -Last 1 }
+if (-not $module) { throw 'PSAITerminal 输入路由的活动模块实例不存在。' }
+& $module { param($status) Invoke-AIHostReadLine $status } $lastRunStatus
 '@)
     Set-Item -LiteralPath Function:\global:PSConsoleHostReadLine -Value $script:PSAIHostReadLine
 
@@ -3300,7 +3485,31 @@ function Install-PSAIProfileIntegration {
         $directory = Split-Path -Parent $path
         if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
         $version = $ExecutionContext.SessionState.Module.Version.ToString()
-        $block = "$start`ntry { Import-Module PSAITerminal -MinimumVersion '$version' -ErrorAction Stop }`ncatch { Write-Warning `"PSAITerminal 自动加载失败：`$(`$_.Exception.Message)`" }`n$end`n"
+        $moduleBase = $ExecutionContext.SessionState.Module.ModuleBase
+        $moduleParent = Split-Path -Parent $moduleBase
+        $moduleRoot = if ((Split-Path -Leaf $moduleBase) -eq 'PSAITerminal') {
+            $moduleParent
+        } elseif ((Split-Path -Leaf $moduleParent) -eq 'PSAITerminal') {
+            Split-Path -Parent $moduleParent
+        } else {
+            $moduleParent
+        }
+        $escapedModuleRoot = ([IO.Path]::GetFullPath($moduleRoot)).Replace("'", "''")
+        $block = @'
+{START}
+$__psaiModuleRoot = '{MODULE_ROOT}'
+if (@($env:PSModulePath -split [IO.Path]::PathSeparator) -notcontains $__psaiModuleRoot) {
+    $env:PSModulePath = $__psaiModuleRoot + [IO.Path]::PathSeparator + $env:PSModulePath
+}
+try { Import-Module PSAITerminal -MinimumVersion '{VERSION}' -ErrorAction Stop }
+catch { Write-Warning "PSAITerminal 自动加载失败：$($_.Exception.Message)" }
+Remove-Variable __psaiModuleRoot -ErrorAction SilentlyContinue
+{END}
+'@
+        $block = $block.Replace('{START}', $start)
+        $block = $block.Replace('{MODULE_ROOT}', $escapedModuleRoot)
+        $block = $block.Replace('{VERSION}', $version)
+        $block = $block.Replace('{END}', $end)
         $profileUpdate = Get-AIProfileUpdate $content $block
         if ($profileUpdate.RepairNeeded -and (Test-Path -LiteralPath $path -PathType Leaf)) {
             $profileBackup = "$path.psaiterminal-backup.$([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')).$([guid]::NewGuid().ToString('N'))"

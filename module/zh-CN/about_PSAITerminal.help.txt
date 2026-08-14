@@ -37,6 +37,11 @@
     Test-PSAIConfiguration -Online
         在本地检查之外发送一次最小模型请求。
 
+凭据
+    API Key 保存在 Windows Credential Manager，不写入 JSON。
+    模块默认请求跨登录会话持久化；受限登录会话返回 1312 时，会安全降级为当前登录会话凭据，
+    不会改为明文保存。
+
 常用命令
     Get-PSAIModel
     Get-PSAISession

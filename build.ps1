@@ -4,6 +4,8 @@ param(
     [string]$Configuration = 'Debug',
     [switch]$Restore,
     [switch]$Package,
+    [ValidatePattern('^[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*$')]
+    [string]$Prerelease,
     [string]$OutputDirectory
 )
 
@@ -13,7 +15,8 @@ $projectFile = Join-Path $projectRoot 'src/PSAITerminal.csproj'
 $powerShell7ProjectFile = Join-Path $projectRoot 'src/PowerShell7/PSAITerminal.PowerShell7.csproj'
 $sourceManifest = Join-Path $projectRoot 'module/PSAITerminal.psd1'
 $releaseVersion = ([version](Import-PowerShellDataFile -LiteralPath $sourceManifest).ModuleVersion).ToString()
-if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = "out/PSAITerminal-$releaseVersion" }
+$releaseLabel = if ($Prerelease) { "$releaseVersion-$Prerelease" } else { $releaseVersion }
+if ([string]::IsNullOrWhiteSpace($OutputDirectory)) { $OutputDirectory = "out/PSAITerminal-$releaseLabel" }
 $pathComparison = [StringComparison]::OrdinalIgnoreCase
 $separator = [IO.Path]::DirectorySeparatorChar
 $releaseParent = [IO.Path]::GetFullPath((Join-Path $projectRoot 'out')).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
@@ -65,8 +68,21 @@ try {
     }
 
     $manifestPath = Join-Path $stagingRoot 'PSAITerminal.psd1'
+    if ($Prerelease) {
+        $manifestText = [IO.File]::ReadAllText($manifestPath, [Text.Encoding]::UTF8)
+        $anchor = '        PSData = @{'
+        if ($manifestText.IndexOf($anchor, [StringComparison]::Ordinal) -lt 0 -or
+            $manifestText.IndexOf($anchor, [StringComparison]::Ordinal) -ne $manifestText.LastIndexOf($anchor, [StringComparison]::Ordinal)) {
+            throw '无法唯一定位发布清单的 PSData 区块。'
+        }
+        $lineBreak = if ($manifestText.Contains("`r`n")) { "`r`n" } else { "`n" }
+        $manifestText = $manifestText.Replace($anchor, "$anchor$lineBreak            Prerelease = '$Prerelease'")
+        [IO.File]::WriteAllText($manifestPath, $manifestText, [Text.UTF8Encoding]::new($true))
+    }
     $manifest = Test-ModuleManifest -Path $manifestPath
     if ($manifest.Version -ne [version]$releaseVersion) { throw "发布清单版本不正确：$($manifest.Version)" }
+    $manifestPrerelease = [string]$manifest.PrivateData.PSData.Prerelease
+    if ($manifestPrerelease -ne [string]$Prerelease) { throw "发布清单预览标签不正确：$manifestPrerelease" }
     $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.dll')).Version
     if ($assemblyVersion -ne [version]"$releaseVersion.0") { throw "程序集版本不正确：$assemblyVersion" }
     $integrationAssemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.PowerShell7.dll')).Version
@@ -93,7 +109,7 @@ try {
         if (-not $compressCommand) { throw '缺少 Compress-PSResource。请安装 Microsoft.PowerShell.PSResourceGet 1.2.0 或更高版本。' }
         $galleryStage = Join-Path $outputParent ('.gallery-' + [guid]::NewGuid().ToString('N'))
         $galleryModuleRoot = Join-Path $galleryStage 'PSAITerminal'
-        $galleryPackage = Join-Path $outputParent "PSAITerminal.$releaseVersion.nupkg"
+        $galleryPackage = Join-Path $outputParent "PSAITerminal.$releaseLabel.nupkg"
         try {
             [IO.Directory]::CreateDirectory($galleryStage) | Out-Null
             Copy-Item -LiteralPath $outputRoot -Destination $galleryModuleRoot -Recurse

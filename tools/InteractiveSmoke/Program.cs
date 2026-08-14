@@ -26,11 +26,33 @@ if (!File.Exists(pwshPath) || !File.Exists(manifestPath))
 
 string stateRoot = Path.Combine(Path.GetTempPath(), "PSAITerminal.ConPTY." + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(stateRoot);
+string alternateManifestPath = manifestPath;
+if (!useProfile)
+{
+    string alternateModuleDirectory = Path.Combine(stateRoot, "Modules", "PSAITerminal", "0.6.0");
+    CopyDirectory(Path.GetDirectoryName(manifestPath)!, alternateModuleDirectory);
+    alternateManifestPath = Path.Combine(alternateModuleDirectory, Path.GetFileName(manifestPath));
+}
 
 try
 {
+    string escapedManifest = manifestPath.Replace("'", "''", StringComparison.Ordinal);
+    string escapedAlternateManifest = alternateManifestPath.Replace("'", "''", StringComparison.Ordinal);
+    string escapedStateRoot = stateRoot.Replace("'", "''", StringComparison.Ordinal);
     using var terminal = new PseudoTerminal(pwshPath, useProfile ? "-NoLogo" : "-NoLogo -NoProfile", Path.GetDirectoryName(manifestPath)!);
     terminal.WaitFor("PS ", TimeSpan.FromSeconds(15));
+
+    if (useProfile)
+    {
+        string promptMarker = "PS " + Path.GetDirectoryName(manifestPath)!;
+        int initialPromptCount = TerminalText.Count(terminal.GetTranscript(), promptMarker);
+        Thread.Sleep(1500);
+        int idlePromptCount = TerminalText.Count(terminal.GetTranscript(), promptMarker);
+        if (idlePromptCount != initialPromptCount)
+        {
+            throw new InvalidOperationException($"Profile 启动后空闲时重复输出 Prompt：{initialPromptCount} -> {idlePromptCount}\n{terminal.GetTranscript()}");
+        }
+    }
 
     if (useProfile)
     {
@@ -38,11 +60,44 @@ try
     }
     else
     {
-        string escapedManifest = manifestPath.Replace("'", "''", StringComparison.Ordinal);
-        string escapedStateRoot = stateRoot.Replace("'", "''", StringComparison.Ordinal);
         terminal.Send($"$global:__PSAI_ORIGINAL_READLINE=(Get-Command PSConsoleHostReadLine -CommandType Function).Definition;$env:PSAI_CONFIG_HOME='{escapedStateRoot}\\config';$env:PSAI_DATA_HOME='{escapedStateRoot}\\data';Import-Module '{escapedManifest}' -Force;Write-Output '__PSAI_IMPORTED__'\r");
     }
     terminal.WaitFor("__PSAI_IMPORTED__", TimeSpan.FromSeconds(20));
+
+    if (!useProfile)
+    {
+        terminal.WaitForAfter("PS ", "__PSAI_IMPORTED__", TimeSpan.FromSeconds(10));
+        string promptMarker = "PS " + Path.GetDirectoryName(manifestPath)!;
+        int initialPromptCount = TerminalText.Count(terminal.GetTranscript(), promptMarker);
+        Thread.Sleep(1500);
+        int idlePromptCount = TerminalText.Count(terminal.GetTranscript(), promptMarker);
+        if (idlePromptCount != initialPromptCount)
+        {
+            throw new InvalidOperationException($"模块导入后空闲时重复输出 Prompt：{initialPromptCount} -> {idlePromptCount}\n{terminal.GetTranscript()}");
+        }
+    }
+
+    if (!useProfile)
+    {
+        // 同一路径强制重载必须保持 Prompt 与输入路由可用。
+        terminal.Send($"Import-Module '{escapedManifest}' -Force;Write-Output ('__PSAI_FORCE_'+'REIMPORT__')\r");
+        terminal.WaitFor("__PSAI_FORCE_REIMPORT__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_FORCE_REIMPORT__", TimeSpan.FromSeconds(10));
+
+        // 从不同物理路径加载同名模块，覆盖手动按路径导入与 Profile 按名称导入并存的真实场景。
+        terminal.Send($"Import-Module '{escapedAlternateManifest}' -Force;Write-Output ('__PSAI_MODULE_INSTANCES__'+@(Get-Module PSAITerminal -All).Count)\r");
+        terminal.WaitFor("__PSAI_MODULE_INSTANCES__2", TimeSpan.FromSeconds(10));
+
+        // 包装器进入重入状态时必须直接回退，不能再次进入模块形成 Prompt 递归。
+        terminal.Send("$promptState=[AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState');try{$promptState.InvocationActive=$true;$null=prompt;Write-Output ('__PSAI_REENTRY_'+'GUARDED__')}finally{$promptState.InvocationActive=$false}\r");
+        terminal.WaitFor("__PSAI_REENTRY_GUARDED__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_REENTRY_GUARDED__", TimeSpan.FromSeconds(10));
+
+        // 第二个实例接管后必须返回可输入的 Prompt，而不是相互递归刷屏。
+        terminal.Send("Write-Output ('__PSAI_PROMPT_'+'ALIVE__')\r");
+        terminal.WaitFor("__PSAI_PROMPT_ALIVE__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_PROMPT_ALIVE__", TimeSpan.FromSeconds(10));
+    }
 
     terminal.Send("$g=Get-Command Get-PSReadLineKeyHandler;if($g.Parameters.ContainsKey('Chord')){$a=(Get-PSReadLineKeyHandler -Chord F2).Function;$b=(Get-PSReadLineKeyHandler -Chord F3).Function}else{$h=@(Get-PSReadLineKeyHandler -Bound);$a=($h|Where-Object Key -eq F2|Select-Object -First 1).Function;$b=($h|Where-Object Key -eq F3|Select-Object -First 1).Function};Write-Output ('__PSAI_BINDINGS__'+$a+'|'+$b)\r");
     terminal.WaitFor("__PSAI_BINDINGS__PSAIForceAI|PSAIForceShell", TimeSpan.FromSeconds(10));
@@ -50,22 +105,28 @@ try
     if (!useProfile)
     {
         // 模式标记必须由真实 prompt 动态显示，且不能依赖预先配置模型。
-        terminal.Send("& (Get-Module PSAITerminal) { $script:Config.mode='AI' }");
-        terminal.Send("\u001bOR");
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='AI' }\r");
         terminal.WaitFor("[AI] PS ", TimeSpan.FromSeconds(10));
-        terminal.Send("& (Get-Module PSAITerminal) { $script:Config.mode='Auto' }");
+        int initialAiPromptCount = TerminalText.Count(terminal.GetTranscript(), "[AI] PS ");
+        Thread.Sleep(1500);
+        int idleAiPromptCount = TerminalText.Count(terminal.GetTranscript(), "[AI] PS ");
+        if (idleAiPromptCount != initialAiPromptCount)
+        {
+            throw new InvalidOperationException($"AI 模式空闲时重复输出 Prompt：{initialAiPromptCount} -> {idleAiPromptCount}\n{terminal.GetTranscript()}");
+        }
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='Auto' }");
         terminal.Send("\u001bOR");
         terminal.WaitFor("[AUTO] PS ", TimeSpan.FromSeconds(10));
-        terminal.Send("& (Get-Module PSAITerminal) { $script:Config.mode='Off' };Write-Output '__PSAI_MODE_OFF__'");
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='Off' };Write-Output ('__PSAI_MODE_'+'OFF__')");
         terminal.Send("\u001bOR");
         terminal.WaitFor("__PSAI_MODE_OFF__", TimeSpan.FromSeconds(10));
 
-        terminal.Send("& (Get-Module PSAITerminal) { $value=Read-AIChoice (Get-AIText 'SelectNumber') @(1,2) 1;Write-Output ('__PSAI_DEFAULT_CHOICE__'+$value) }\r");
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $value=Read-AIChoice (Get-AIText 'SelectNumber') @(1,2) 1;Write-Output ('__PSAI_DEFAULT_CHOICE__'+$value) }\r");
         terminal.WaitFor("Enter a number (default 1):", TimeSpan.FromSeconds(10));
         terminal.Send("\r");
         terminal.WaitFor("__PSAI_DEFAULT_CHOICE__1", TimeSpan.FromSeconds(10));
 
-        terminal.Send("& (Get-Module PSAITerminal) { $script:Config.language='zh-CN';$value=Read-AIChoice (Get-AIText 'SelectNumber') @(1,2) 1;Write-Output ('__PSAI_ZH_DEFAULT_CHOICE__'+$value);$script:Config.language='en-US' }\r");
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.language='zh-CN';$value=Read-AIChoice (Get-AIText 'SelectNumber') @(1,2) 1;Write-Output ('__PSAI_ZH_DEFAULT_CHOICE__'+$value);$script:Config.language='en-US' }\r");
         terminal.WaitFor("请输入序号（默认1）:", TimeSpan.FromSeconds(10));
         terminal.Send("\r");
         terminal.WaitFor("__PSAI_ZH_DEFAULT_CHOICE__1", TimeSpan.FromSeconds(10));
@@ -90,7 +151,7 @@ try
         terminal.Send("\u001bOQ");
         terminal.WaitFor("尚未配置活动模型", TimeSpan.FromSeconds(15));
 
-        terminal.Send("Remove-Module PSAITerminal;if((Get-Command PSConsoleHostReadLine -CommandType Function).Definition -ceq $global:__PSAI_ORIGINAL_READLINE){Write-Output '__PSAI_READLINE_RESTORED__'}else{Write-Output '__PSAI_READLINE_NOT_RESTORED__'}\r");
+        terminal.Send("Get-Module PSAITerminal -All|Remove-Module -Force;if((Get-Command PSConsoleHostReadLine -CommandType Function).Definition -ceq $global:__PSAI_ORIGINAL_READLINE){Write-Output '__PSAI_READLINE_RESTORED__'}else{Write-Output '__PSAI_READLINE_NOT_RESTORED__'}\r");
         terminal.WaitFor("__PSAI_READLINE_RESTORED__", TimeSpan.FromSeconds(10));
     }
 
@@ -126,8 +187,37 @@ finally
     catch { }
 }
 
+static void CopyDirectory(string sourceDirectory, string destinationDirectory)
+{
+    Directory.CreateDirectory(destinationDirectory);
+    foreach (string directory in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.AllDirectories))
+    {
+        Directory.CreateDirectory(Path.Combine(destinationDirectory, Path.GetRelativePath(sourceDirectory, directory)));
+    }
+
+    foreach (string file in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.AllDirectories))
+    {
+        string destination = Path.Combine(destinationDirectory, Path.GetRelativePath(sourceDirectory, file));
+        File.Copy(file, destination, overwrite: true);
+    }
+}
+
 static class TerminalText
 {
+    internal static int Count(string value, string marker)
+    {
+        string clean = Strip(value);
+        int count = 0;
+        int index = 0;
+        while ((index = clean.IndexOf(marker, index, StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            count++;
+            index += marker.Length;
+        }
+
+        return count;
+    }
+
     internal static string Strip(string value)
     {
         // 仅用于测试日志归一化；产品中的有状态清洗器另有完整测试。
@@ -214,6 +304,27 @@ sealed class PseudoTerminal : IDisposable
         }
 
         throw new TimeoutException($"等待终端输出超时：{marker}\n{GetTranscript()}");
+    }
+
+    public void WaitForAfter(string marker, string precedingMarker, TimeSpan timeout)
+    {
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (_gate)
+            {
+                string clean = TerminalText.Strip(_transcript.ToString());
+                int precedingIndex = clean.LastIndexOf(precedingMarker, StringComparison.Ordinal);
+                if (precedingIndex >= 0 && clean.IndexOf(marker, precedingIndex + precedingMarker.Length, StringComparison.Ordinal) >= 0)
+                {
+                    return;
+                }
+            }
+
+            Thread.Sleep(25);
+        }
+
+        throw new TimeoutException($"等待 {precedingMarker} 后的终端输出超时：{marker}\n{GetTranscript()}");
     }
 
     public void WaitForExit(TimeSpan timeout)
