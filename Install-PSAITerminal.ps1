@@ -52,6 +52,46 @@ function Test-PSAIPathFullyQualified([string]$Path) {
     [IO.Path]::GetFullPath($Path) -eq $Path -or $Path -match '^[A-Za-z]:[\\/]'
 }
 
+function Read-PSAITextFile([Parameter(Mandatory)][string]$Path) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return '' }
+
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE -and $bytes[2] -eq 0x00 -and $bytes[3] -eq 0x00) {
+        return (New-Object Text.UTF32Encoding($false, $false, $true)).GetString($bytes, 4, $bytes.Length - 4)
+    }
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0x00 -and $bytes[1] -eq 0x00 -and $bytes[2] -eq 0xFE -and $bytes[3] -eq 0xFF) {
+        return (New-Object Text.UTF32Encoding($true, $false, $true)).GetString($bytes, 4, $bytes.Length - 4)
+    }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return $strictUtf8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return [Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+
+    try { return $strictUtf8.GetString($bytes) }
+    catch [Text.DecoderFallbackException] {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            return [Text.Encoding]::Default.GetString($bytes)
+        }
+        try {
+            $providerType = [Type]::GetType('System.Text.CodePagesEncodingProvider, System.Text.Encoding.CodePages', $false)
+            if ($providerType) {
+                $provider = $providerType.GetProperty('Instance').GetValue($null, $null)
+                [Text.Encoding]::RegisterProvider($provider)
+            }
+            $codePage = [Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+            return [Text.Encoding]::GetEncoding($codePage).GetString($bytes)
+        } catch {
+            throw "文件不是有效 UTF-8，且无法按系统代码页读取：$Path。$($_.Exception.Message)"
+        }
+    }
+}
+
 function Resolve-PSAIUserModuleRoot([string]$RequestedRoot) {
     $candidate = if ($RequestedRoot) { $RequestedRoot } else {
         Join-Path $script:DocumentsRoot "$script:ResolvedTargetHost\Modules"
@@ -305,7 +345,7 @@ if (-not (Get-Command Get-PSAIIntegrationStatus -ErrorAction SilentlyContinue)) 
 
     if (-not $NoProfileIntegration) {
         $profilePath = $resolvedProfilePath
-        $profileContent = if (Test-Path -LiteralPath $profilePath) { Get-Content -LiteralPath $profilePath -Raw } else { '' }
+        $profileContent = if (Test-Path -LiteralPath $profilePath) { Read-PSAITextFile $profilePath } else { '' }
         $block = @'
 # PSAITerminal 自动加载（开始）
 try { Import-Module PSAITerminal -MinimumVersion '{VERSION}' -ErrorAction Stop }

@@ -795,12 +795,22 @@ try {
     $nativeFailureCommand = if ($IsWindows) { 'cmd /c exit 7' } else { "sh -c 'exit 7'" }
     $nativeMixedLiteral = "'" + ($nativeFailureCommand + '; Get-Date | Out-Null').Replace("'", "''") + "'"
     $nativeMixedHarness = & $module { param($literal) New-AITopLevelHarnessScript ("[pscustomobject]@{RunId='r3';StepId='s3';ApprovalDigest=('c'*64);ApprovalRevision=3;Command=$literal}") } $nativeMixedLiteral
+    $formatHarness = & $module { New-AITopLevelHarnessScript "[pscustomobject]@{RunId='r4';StepId='s4';ApprovalDigest=('d'*64);ApprovalRevision=4;Command='Get-Date | Select-Object DateTime | Format-Table -AutoSize'}" }
     Assert-Match $successHarness 'AITerminalBoundedTextCollector' 'Agent Harness 必须边执行边写入有界输出收集器。'
     Assert-Match $successHarness 'PSNativeCommandUseErrorActionPreference = \$true' 'Agent Harness 必须把原生命令非零退出转换为可累计错误。'
+    Assert-Match $successHarness 'Out-String -Stream' 'Agent Harness 必须整体渲染格式化记录，不能逐对象破坏 Format-Table 序列。'
     Assert-Equal $false $successHarness.Contains('@(. ([scriptblock]::Create') 'Agent Harness 不能先把全部命令输出缓存到数组。'
     Remove-Module PSAITerminal
-    function global:Start-PSAIToolExecution { param($RunId,$StepId,$ApprovalDigest,[long]$ApprovalRevision) }
-    function global:Complete-PSAIToolExecution { param($RunId,$StepId,[bool]$Succeeded,$Output); $global:HarnessObservedSuccess=$Succeeded }
+    function global:Start-PSAIToolExecution {
+        param($RunId,$StepId,$ApprovalDigest,[long]$ApprovalRevision)
+        [void]$RunId; [void]$StepId; [void]$ApprovalDigest; [void]$ApprovalRevision
+    }
+    function global:Complete-PSAIToolExecution {
+        param($RunId,$StepId,[bool]$Succeeded,$Output)
+        [void]$RunId; [void]$StepId
+        Set-Variable -Name HarnessObservedSuccess -Scope Global -Value $Succeeded
+        Set-Variable -Name HarnessObservedOutput -Scope Global -Value $Output
+    }
     try {
         $nativePreferenceBefore = $PSNativeCommandUseErrorActionPreference
         . ([scriptblock]::Create($successHarness))
@@ -811,11 +821,14 @@ try {
         Assert-Equal $false $HarnessObservedSuccess '前面的非终止错误不能被后续成功语句覆盖。'
         . ([scriptblock]::Create($nativeMixedHarness)) 2>$null
         Assert-Equal $false $HarnessObservedSuccess '前面的原生命令非零退出不能被后续成功语句覆盖。'
+        . ([scriptblock]::Create($formatHarness))
+        Assert-Equal $true $HarnessObservedSuccess 'Format-Table 输出不能导致 Agent 命令被误判为失败。'
+        Assert-Match $HarnessObservedOutput 'DateTime' 'Format-Table 的文本输出必须进入有界收集器。'
         Assert-Equal $nativePreferenceBefore $PSNativeCommandUseErrorActionPreference 'Harness 必须恢复用户原有的原生命令错误偏好。'
     } finally {
         Remove-Item Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
         Remove-Item Function:\Invoke-HarnessProbe -ErrorAction SilentlyContinue
-        Remove-Variable HarnessObservedSuccess,HarnessScopeProbe -Scope Global -ErrorAction SilentlyContinue
+        Remove-Variable HarnessObservedSuccess,HarnessObservedOutput,HarnessScopeProbe -Scope Global -ErrorAction SilentlyContinue
     }
 
     # v1 配置迁移以及损坏配置不被导入过程覆盖。
@@ -851,7 +864,7 @@ try {
     Assert-Equal ([IO.Path]::GetFullPath($testProfile)) $installResult.ProfilePath '安装器必须返回实际写入的 Profile 路径。'
     $profileContent = Get-Content -LiteralPath $testProfile -Raw
     Assert-Match $profileContent ([regex]::Escape("Import-Module PSAITerminal -MinimumVersion '$releaseVersion'")) '安装器必须写入带最低版本的自动加载区块。'
-    $repeatInstall = & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -ModuleRoot $installRoot -ProfilePath $testProfile
+    & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -ModuleRoot $installRoot -ProfilePath $testProfile | Out-Null
     $repeatedProfileContent = Get-Content -LiteralPath $testProfile -Raw
     Assert-Equal 1 @([regex]::Matches($repeatedProfileContent, 'PSAITerminal 自动加载（开始）')).Count '重复安装不能重复写入 Profile 区块。'
     Assert-True $repeatedProfileContent.Contains('$($_.Exception.Message)') '重复安装必须保留 Profile 区块中的 PowerShell 表达式，不能把它当成正则替换语法。'
@@ -909,15 +922,35 @@ try {
             & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -TargetHost Both `
                 -ModuleRoot (Join-Path $testRoot 'invalid-root') -NoProfileIntegration
         } '不能与' 'Both 必须拒绝自定义模块根，避免安装目标歧义。'
-        & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -TargetHost Both -NoProfileIntegration | Out-Null
+        $providerType = [Type]::GetType('System.Text.CodePagesEncodingProvider, System.Text.Encoding.CodePages', $false)
+        if ($providerType) {
+            $provider = $providerType.GetProperty('Instance').GetValue($null, $null)
+            [Text.Encoding]::RegisterProvider($provider)
+        }
+        $ansiEncoding = [Text.Encoding]::GetEncoding([Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage)
+        foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {
+            $profilePath = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Microsoft.PowerShell_profile.ps1"
+            [void][IO.Directory]::CreateDirectory((Split-Path -Parent $profilePath))
+            $profileEncoding = if ($hostDirectory -eq 'WindowsPowerShell') { $ansiEncoding } else { New-Object Text.UTF8Encoding($false) }
+            [IO.File]::WriteAllText($profilePath, "legacy café - $hostDirectory`r`n", $profileEncoding)
+        }
+        & (Join-Path $moduleOutput 'Install-PSAITerminal.ps1') -TargetHost Both | Out-Null
         foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {
             $bothPath = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Modules/PSAITerminal/$releaseVersion"
             Assert-True (Test-Path -LiteralPath $bothPath -PathType Container) "Both 未安装到隔离的 $hostDirectory 标准目录。"
+            $profilePath = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Microsoft.PowerShell_profile.ps1"
+            $profileText = [IO.File]::ReadAllText($profilePath, [Text.Encoding]::UTF8)
+            Assert-Match $profileText ([regex]::Escape("legacy café - $hostDirectory")) "Both 安装不能破坏 $hostDirectory Profile 的原始编码内容。"
+            Assert-Equal 1 @([regex]::Matches($profileText, 'PSAITerminal 自动加载（开始）')).Count "Both 安装必须只写入一个 $hostDirectory Profile 区块。"
         }
-        & (Join-Path $moduleOutput 'Uninstall-PSAITerminal.ps1') -TargetHost Both -NoProfileIntegration | Out-Null
+        & (Join-Path $moduleOutput 'Uninstall-PSAITerminal.ps1') -TargetHost Both | Out-Null
         foreach ($hostDirectory in @('WindowsPowerShell','PowerShell')) {
             $bothBase = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Modules/PSAITerminal"
             Assert-Equal $false (Test-Path -LiteralPath $bothBase) "Both 卸载未清理隔离的 $hostDirectory 模块目录。"
+            $profilePath = Join-Path $env:PSAI_TEST_DOCUMENTS_HOME "$hostDirectory/Microsoft.PowerShell_profile.ps1"
+            $profileText = [IO.File]::ReadAllText($profilePath, [Text.Encoding]::UTF8)
+            Assert-Match $profileText ([regex]::Escape("legacy café - $hostDirectory")) "Both 卸载不能删除 $hostDirectory Profile 的用户内容。"
+            Assert-Equal $false ($profileText -match 'PSAITerminal 自动加载') "Both 卸载必须移除 $hostDirectory Profile 区块。"
         }
     } finally {
         Remove-Item Env:PSAI_TEST_DOCUMENTS_HOME -ErrorAction SilentlyContinue

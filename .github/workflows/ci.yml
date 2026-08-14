@@ -84,6 +84,31 @@ jobs:
         shell: pwsh
         run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./build.ps1 -Restore -Configuration Release -Package'
 
+      - name: 检查 NuGet 已知漏洞
+        shell: pwsh
+        run: |
+          foreach ($projectPath in @('./src/PSAITerminal.csproj','./src/PowerShell7/PSAITerminal.PowerShell7.csproj')) {
+            $auditJson = & dotnet list $projectPath package --vulnerable --include-transitive --format json
+            if ($LASTEXITCODE -ne 0) { throw "NuGet 漏洞查询失败：$projectPath" }
+            $audit = ($auditJson -join "`n") | ConvertFrom-Json
+            $vulnerable = foreach ($project in @($audit.projects)) {
+              if (-not $project.PSObject.Properties['frameworks']) { continue }
+              foreach ($framework in @($project.frameworks)) {
+                if ($null -eq $framework) { continue }
+                foreach ($propertyName in @('topLevelPackages','transitivePackages')) {
+                  if (-not $framework.PSObject.Properties[$propertyName]) { continue }
+                  foreach ($package in @($framework.$propertyName)) {
+                    if (@($package.vulnerabilities).Count -gt 0) { $package }
+                  }
+                }
+              }
+            }
+            if (@($vulnerable).Count -gt 0) {
+              $details = @($vulnerable | ForEach-Object { "$($_.id) $($_.resolvedVersion)" }) -join ', '
+              throw "发现已知漏洞依赖：$projectPath：$details"
+            }
+          }
+
       - name: 运行完整回归
         shell: pwsh
         run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./tests/run.ps1'

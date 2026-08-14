@@ -281,6 +281,51 @@ function ConvertFrom-AIJson([Parameter(Mandatory)][string]$Json) {
     ConvertTo-AIJsonMap $parsed
 }
 
+function Read-AITextFile([Parameter(Mandatory)][string]$Path, [switch]$Utf8Only) {
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -eq 0) { return '' }
+
+    $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+    if ($Utf8Only) {
+        $offset = if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { 3 } else { 0 }
+        return $strictUtf8.GetString($bytes, $offset, $bytes.Length - $offset)
+    }
+
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE -and $bytes[2] -eq 0x00 -and $bytes[3] -eq 0x00) {
+        return (New-Object Text.UTF32Encoding($false, $false, $true)).GetString($bytes, 4, $bytes.Length - 4)
+    }
+    if ($bytes.Length -ge 4 -and $bytes[0] -eq 0x00 -and $bytes[1] -eq 0x00 -and $bytes[2] -eq 0xFE -and $bytes[3] -eq 0xFF) {
+        return (New-Object Text.UTF32Encoding($true, $false, $true)).GetString($bytes, 4, $bytes.Length - 4)
+    }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return $strictUtf8.GetString($bytes, 3, $bytes.Length - 3)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return [Text.Encoding]::Unicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+    if ($bytes.Length -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return [Text.Encoding]::BigEndianUnicode.GetString($bytes, 2, $bytes.Length - 2)
+    }
+
+    try { return $strictUtf8.GetString($bytes) }
+    catch [Text.DecoderFallbackException] {
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            return [Text.Encoding]::Default.GetString($bytes)
+        }
+        try {
+            $providerType = [Type]::GetType('System.Text.CodePagesEncodingProvider, System.Text.Encoding.CodePages', $false)
+            if ($providerType) {
+                $provider = $providerType.GetProperty('Instance').GetValue($null, $null)
+                [Text.Encoding]::RegisterProvider($provider)
+            }
+            $codePage = [Globalization.CultureInfo]::CurrentCulture.TextInfo.ANSICodePage
+            return [Text.Encoding]::GetEncoding($codePage).GetString($bytes)
+        } catch {
+            throw "文件不是有效 UTF-8，且无法按系统代码页读取：$Path。$($_.Exception.Message)"
+        }
+    }
+}
+
 function Resolve-AIStorageOverride([string]$Value, [string]$VariableName) {
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     if (-not (Test-AIPathFullyQualified $Value)) {
@@ -360,7 +405,7 @@ function Get-AIStoredRevision([string]$Path, [string]$Label, [int]$MaximumBytes)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return -1L }
     $file = Get-Item -LiteralPath $Path -ErrorAction Stop
     if ($file.Length -gt $MaximumBytes) { throw "${Label}文件超过 $MaximumBytes 字节上限。" }
-    $stored = ConvertFrom-AIJson (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop)
+    $stored = ConvertFrom-AIJson (Read-AITextFile $Path -Utf8Only)
     if ($stored -isnot [Collections.IDictionary]) { throw "${Label}文件根节点无效。" }
     Get-AIRevision $stored $Label
 }
@@ -571,7 +616,7 @@ function Initialize-AIState {
         [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($script:ConfigPath)
         $configFile = Get-Item -LiteralPath $script:ConfigPath -ErrorAction Stop
         if ($configFile.Length -gt 1MB) { throw '配置文件超过 1 MiB 上限。' }
-        $loaded = ConvertFrom-AIJson (Get-Content -LiteralPath $script:ConfigPath -Raw -ErrorAction Stop)
+        $loaded = ConvertFrom-AIJson (Read-AITextFile $script:ConfigPath -Utf8Only)
         $script:Config = Merge-AIConfig $loaded
     } catch {
         $script:ConfigLoadFailed = $true
@@ -694,7 +739,7 @@ function Import-AISession([string]$Id) {
         [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($path)
         $sessionFile = Get-Item -LiteralPath $path -ErrorAction Stop
         if ($sessionFile.Length -gt 16MB) { throw '会话文件超过 16 MiB 上限。' }
-        $session = ConvertFrom-AIJson (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
+        $session = ConvertFrom-AIJson (Read-AITextFile $path -Utf8Only)
         Assert-AIIntegerValue $session.schemaVersion 1 1 '会话版本'
         $session.revision = Get-AIRevision $session '会话'
         if ([string]$session.id -ne $Id -or $session.id -notmatch '^[a-fA-F0-9]{32}$') { throw '会话 ID 不一致。' }
@@ -2234,7 +2279,7 @@ function Import-AIRun([string]$Id) {
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateFile($path)
     $runFile = Get-Item -LiteralPath $path -ErrorAction Stop
     if ($runFile.Length -gt 4MB) { throw 'Run 检查点超过 4 MiB 上限。' }
-    $run = ConvertFrom-AIJson (Get-Content -LiteralPath $path -Raw -ErrorAction Stop)
+    $run = ConvertFrom-AIJson (Read-AITextFile $path -Utf8Only)
     Assert-AIIntegerValue $run.schemaVersion 1 1 'Run 版本'
     $run.revision = Get-AIRevision $run 'Run'
     if ([string]$run.id -ne $Id -or $run.id -notmatch '^[a-fA-F0-9]{32}$' -or
@@ -2694,7 +2739,9 @@ try {
             $PSNativeCommandUseErrorActionPreference = $true
             . ([scriptblock]::Create(${CODE})) *>&1 | ForEach-Object {
                 if ($_ -is [Management.Automation.ErrorRecord]) { ${EXECUTION_STATE}.HadError = $true }
-                ${COLLECTOR}.Append(($_ | Out-String))
+                $_
+            } | Out-String -Stream | ForEach-Object {
+                ${COLLECTOR}.Append($_ + [Environment]::NewLine)
                 $_ | Out-Host
             }
         } catch {
@@ -3094,7 +3141,7 @@ function Get-AIShortcutStatus {
 function Test-AIProfileIntegration {
     try {
         if (-not (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) { return $false }
-        (Get-Content -LiteralPath $PROFILE.CurrentUserCurrentHost -Raw) -match '(?m)^# PSAITerminal 自动加载（开始）$'
+        (Read-AITextFile $PROFILE.CurrentUserCurrentHost) -match '(?m)^# PSAITerminal 自动加载（开始）$'
     } catch { $false }
 }
 
@@ -3248,7 +3295,7 @@ function Install-PSAIProfileIntegration {
     [CmdletBinding(SupportsShouldProcess)] param()
     $path = $PROFILE.CurrentUserCurrentHost
     $start = '# PSAITerminal 自动加载（开始）'; $end = '# PSAITerminal 自动加载（结束）'
-    $content = if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw } else { '' }
+    $content = if (Test-Path -LiteralPath $path) { Read-AITextFile $path } else { '' }
     if ($PSCmdlet.ShouldProcess($path, '添加 PSAITerminal 自动加载')) {
         $directory = Split-Path -Parent $path
         if ($directory) { [IO.Directory]::CreateDirectory($directory) | Out-Null }
@@ -3270,7 +3317,7 @@ function Uninstall-PSAIProfileIntegration {
     [CmdletBinding(SupportsShouldProcess)] param()
     $path = $PROFILE.CurrentUserCurrentHost
     if (-not (Test-Path -LiteralPath $path)) { return }
-    $content = Get-Content -LiteralPath $path -Raw
+    $content = Read-AITextFile $path
     $updated = (Get-AIProfileUpdate $content $null).Content
     if ($updated -ne $content -and $PSCmdlet.ShouldProcess($path, '移除 PSAITerminal 自动加载')) {
         [PSAITerminal.AITerminalAtomicFile]::WriteAllText($path, $updated)
