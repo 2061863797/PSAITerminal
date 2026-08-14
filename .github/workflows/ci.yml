@@ -35,7 +35,7 @@ jobs:
             10.0.x
 
       - name: 下载并校验 PowerShell 7.6.4
-        shell: powershell
+        shell: pwsh
         run: |
           $asset = 'PowerShell-7.6.4-win-x64.zip'
           $archive = Join-Path $env:RUNNER_TEMP $asset
@@ -81,15 +81,15 @@ jobs:
           }
 
       - name: 构建发布包
-        shell: powershell
+        shell: pwsh
         run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./build.ps1 -Restore -Configuration Release -Package'
 
       - name: 运行完整回归
-        shell: powershell
+        shell: pwsh
         run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./tests/run.ps1'
 
       - name: 验证 5.1 x64、5.1 x86 与 7.6.4 共享状态
-        shell: powershell
+        shell: pwsh
         run: |
           $module = (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1").Path
           $state = Join-Path $env:RUNNER_TEMP 'PSAITerminal.Hosts'
