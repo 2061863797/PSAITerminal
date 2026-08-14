@@ -12,7 +12,7 @@ if (!OperatingSystem.IsWindows())
 bool useProfile = args.Length == 3 && string.Equals(args[2], "--profile", StringComparison.Ordinal);
 if (args.Length is < 2 or > 3 || (args.Length == 3 && !useProfile))
 {
-    Console.Error.WriteLine("用法：InteractiveSmoke <pwsh.exe> <PSAITerminal.psd1> [--profile]");
+    Console.Error.WriteLine("用法：InteractiveSmoke <powershell.exe|pwsh.exe> <PSAITerminal.psd1> [--profile]");
     return 2;
 }
 
@@ -44,7 +44,7 @@ try
     }
     terminal.WaitFor("__PSAI_IMPORTED__", TimeSpan.FromSeconds(20));
 
-    terminal.Send("$a=(Get-PSReadLineKeyHandler -Chord F2).Function;$b=(Get-PSReadLineKeyHandler -Chord F3).Function;Write-Output ('__PSAI_BINDINGS__'+$a+'|'+$b)\r");
+    terminal.Send("$g=Get-Command Get-PSReadLineKeyHandler;if($g.Parameters.ContainsKey('Chord')){$a=(Get-PSReadLineKeyHandler -Chord F2).Function;$b=(Get-PSReadLineKeyHandler -Chord F3).Function}else{$h=@(Get-PSReadLineKeyHandler -Bound);$a=($h|Where-Object Key -eq F2|Select-Object -First 1).Function;$b=($h|Where-Object Key -eq F3|Select-Object -First 1).Function};Write-Output ('__PSAI_BINDINGS__'+$a+'|'+$b)\r");
     terminal.WaitFor("__PSAI_BINDINGS__PSAIForceAI|PSAIForceShell", TimeSpan.FromSeconds(10));
 
     if (!useProfile)

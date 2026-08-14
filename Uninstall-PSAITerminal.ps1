@@ -1,44 +1,86 @@
-#requires -Version 7.4
+﻿#requires -Version 5.1
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
+    [ValidateSet('Current','WindowsPowerShell','PowerShell','Both')]
+    [string]$TargetHost = 'Current',
     [string]$ModuleRoot,
-    [string]$ProfilePath
+    [string]$ProfilePath,
+    [switch]$NoProfileIntegration
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-$script:PathComparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
+if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 0.6.0 仅支持 Windows。' }
+if ($NoProfileIntegration -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
+    throw '-NoProfileIntegration 与 -ProfilePath 不能同时使用。'
+}
+if ($TargetHost -eq 'Both' -and (-not [string]::IsNullOrWhiteSpace($ModuleRoot) -or -not [string]::IsNullOrWhiteSpace($ProfilePath))) {
+    throw '-TargetHost Both 不能与 -ModuleRoot 或 -ProfilePath 同时使用。'
+}
+if ($env:PSAI_TEST_DOCUMENTS_HOME -and $env:PSAI_TEST_MODE -ne '1') {
+    throw 'PSAI_TEST_DOCUMENTS_HOME 只能在 PSAI_TEST_MODE=1 的隔离测试中使用。'
+}
+$script:DocumentsRoot = if ($env:PSAI_TEST_DOCUMENTS_HOME) { [IO.Path]::GetFullPath($env:PSAI_TEST_DOCUMENTS_HOME) }
+    else { [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments) }
+if ($TargetHost -eq 'Both') {
+    $results = foreach ($hostTarget in @('WindowsPowerShell','PowerShell')) {
+        $arguments = @{ TargetHost=$hostTarget; NoProfileIntegration=$NoProfileIntegration; Confirm=$false }
+        if ($WhatIfPreference) { $arguments.WhatIf = $true }
+        & $PSCommandPath @arguments
+    }
+    return $results
+}
+$script:ResolvedTargetHost = if ($TargetHost -eq 'Current') {
+    if ($PSVersionTable.PSEdition -eq 'Core') { 'PowerShell' } else { 'WindowsPowerShell' }
+} else { $TargetHost }
+$script:PathComparison = [StringComparison]::OrdinalIgnoreCase
 $script:DirectorySeparator = [IO.Path]::DirectorySeparatorChar
 
 function ConvertTo-PSAINormalizedPath([string]$Path) {
     [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
 }
 
+function Test-PSAIPathFullyQualified([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    [IO.Path]::GetFullPath($Path) -eq $Path -or $Path -match '^[A-Za-z]:[\\/]'
+}
+
 function Resolve-PSAIInstalledModuleRoot([string]$RequestedRoot) {
-    $candidates = if ($RequestedRoot) { @($RequestedRoot) }
-        else { @($env:PSModulePath -split [IO.Path]::PathSeparator) }
-    foreach ($candidate in $candidates) {
-        if ([string]::IsNullOrWhiteSpace($candidate) -or -not [IO.Path]::IsPathFullyQualified($candidate)) { continue }
-        $fullPath = ConvertTo-PSAINormalizedPath $candidate
-        if (Test-Path -LiteralPath (Join-Path $fullPath 'PSAITerminal')) { return $fullPath }
+    $candidate = if ($RequestedRoot) { $RequestedRoot } else { Join-Path $script:DocumentsRoot "$script:ResolvedTargetHost\Modules" }
+    if (-not (Test-PSAIPathFullyQualified $candidate)) { throw "模块根目录必须是完整路径：$candidate" }
+    $fullPath = ConvertTo-PSAINormalizedPath $candidate
+    $rootPath = [IO.Path]::GetPathRoot($fullPath).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar)
+    if ($fullPath.Equals($rootPath, $script:PathComparison)) { throw "拒绝使用磁盘根目录作为模块根：$fullPath" }
+    foreach ($protectedPath in @($PSHOME,$env:ProgramFiles,[Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),$env:windir)) {
+        if (-not $protectedPath) { continue }
+        $protectedRoot = (ConvertTo-PSAINormalizedPath $protectedPath) + $script:DirectorySeparator
+        if (($fullPath + $script:DirectorySeparator).StartsWith($protectedRoot, $script:PathComparison)) {
+            throw "拒绝使用系统目录作为模块根：$fullPath"
+        }
     }
-    throw '没有在当前 PSModulePath 中找到 PSAITerminal。可通过 -ModuleRoot 指定安装根目录。'
+    $fullPath
 }
 
 function Write-PSAIUtf8FileAtomically([string]$Path, [string]$Content) {
     $temporaryPath = "$Path.tmp.$([guid]::NewGuid().ToString('N'))"
+    $replacementBackup = "$Path.replace-backup.$([guid]::NewGuid().ToString('N'))"
     try {
-        [IO.File]::WriteAllText($temporaryPath, $Content, [Text.UTF8Encoding]::new($false))
-        [IO.File]::Move($temporaryPath, $Path, $true)
+        [IO.File]::WriteAllText($temporaryPath, $Content, (New-Object Text.UTF8Encoding($true)))
+        if (Test-Path -LiteralPath $Path) {
+            [IO.File]::Replace($temporaryPath, $Path, $replacementBackup)
+            Remove-Item -LiteralPath $replacementBackup -Force
+        }
+        else { [IO.File]::Move($temporaryPath, $Path) }
     } finally {
         if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
+        if (Test-Path -LiteralPath $replacementBackup) { Remove-Item -LiteralPath $replacementBackup -Force }
     }
 }
 
 function Resolve-PSAIProfilePath([string]$RequestedPath) {
-    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) { [string]$PROFILE.CurrentUserCurrentHost } else { $RequestedPath }
-    if ([string]::IsNullOrWhiteSpace($path) -or -not [IO.Path]::IsPathFullyQualified($path) -or
+    $path = if ([string]::IsNullOrWhiteSpace($RequestedPath)) { Join-Path $script:DocumentsRoot "$script:ResolvedTargetHost\Microsoft.PowerShell_profile.ps1" } else { $RequestedPath }
+    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-PSAIPathFullyQualified $path) -or
         [IO.Path]::GetExtension($path) -ne '.ps1') {
         throw 'Profile 路径必须是完整的 .ps1 文件路径。'
     }
@@ -89,7 +131,7 @@ function Get-PSAIProfileUpdate([string]$Content) {
 }
 
 $resolvedModuleRoot = Resolve-PSAIInstalledModuleRoot $ModuleRoot
-$resolvedProfilePath = Resolve-PSAIProfilePath $ProfilePath
+$resolvedProfilePath = if ($NoProfileIntegration) { $null } else { Resolve-PSAIProfilePath $ProfilePath }
 $moduleBase = ConvertTo-PSAINormalizedPath (Join-Path $resolvedModuleRoot 'PSAITerminal')
 if ((Split-Path $moduleBase -Leaf) -ne 'PSAITerminal' -or
     -not (ConvertTo-PSAINormalizedPath (Split-Path $moduleBase -Parent)).Equals($resolvedModuleRoot, $script:PathComparison)) {
@@ -105,7 +147,7 @@ if ($loaded) { throw '当前进程正在使用 PSAITerminal。请运行 pwsh -No
 if ($PSCmdlet.ShouldProcess($moduleBase, '卸载 PSAITerminal 模块')) {
     $profilePath = $resolvedProfilePath
     $profileIntegrationRemoved = $false
-    if (Test-Path -LiteralPath $profilePath) {
+    if ($profilePath -and (Test-Path -LiteralPath $profilePath)) {
         $content = Get-Content -LiteralPath $profilePath -Raw
         $updated = (Get-PSAIProfileUpdate $content).Content
         if ($updated -ne $content) {
@@ -113,7 +155,7 @@ if ($PSCmdlet.ShouldProcess($moduleBase, '卸载 PSAITerminal 模块')) {
             $profileIntegrationRemoved = $true
         }
     }
-    Remove-Item -LiteralPath $moduleBase -Recurse -Force
+    if (Test-Path -LiteralPath $moduleBase -PathType Container) { Remove-Item -LiteralPath $moduleBase -Recurse -Force }
     [pscustomobject]@{
         RemovedPath = $moduleBase
         ProfilePath = $resolvedProfilePath

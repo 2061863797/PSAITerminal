@@ -1,11 +1,12 @@
-主题
+﻿主题
     about_PSAITerminal
 
 简短说明
     在官方 PowerShell 中使用本地 AI 问答、命令建议和多步骤 Agent。
 
 平台
-    支持 Windows 上的 PowerShell 7.4 及以上版本。本发布不支持 Linux 和 macOS。
+    支持 Windows PowerShell 5.1（x64/x86）和 Windows 上的 PowerShell 7.4 及以上版本。
+    Linux 和 macOS 不受支持，相关实现已从发布代码中移除。
 
 开始使用
     输入 ai 并按 Enter，新增并选择模型。
@@ -27,6 +28,7 @@
     F7    解释最近一次命令及其结果。
 
     部分笔记本需要同时按 Fn。运行 Get-PSAIIntegrationStatus 可以确认快捷键是否启用。
+    Windows PowerShell 5.1 不提供 PowerShell 7 专属的预测器和反馈 API；状态会显示“宿主不支持”，其他功能保持可用。
 
 诊断
     Test-PSAIConfiguration

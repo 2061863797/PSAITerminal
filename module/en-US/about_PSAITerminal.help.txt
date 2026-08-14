@@ -1,11 +1,12 @@
-TOPIC
+﻿TOPIC
     about_PSAITerminal
 
 SHORT DESCRIPTION
     Use local AI chat, command assistance, and multi-step Agent features in official PowerShell.
 
 PLATFORMS
-    PowerShell 7.4 or later on Windows. Linux and macOS are not supported by this release.
+    Windows PowerShell 5.1 (x64/x86) and PowerShell 7.4 or later on Windows.
+    Linux and macOS are unsupported; their implementations have been removed.
 
 GETTING STARTED
     Type ai and press Enter to open settings, add a model, and select it.
@@ -26,6 +27,8 @@ SHORTCUTS
     F6    Cycle Off, AI, and Auto.
     F7    Explain the most recent command and its result.
     On some laptops, hold Fn together with the function key.
+    Windows PowerShell 5.1 does not expose the PowerShell 7 predictor and feedback APIs;
+    diagnostics report them as unsupported while all other features remain available.
 
 DIAGNOSTICS
     Test-PSAIConfiguration checks installation, configuration, credentials, endpoint,

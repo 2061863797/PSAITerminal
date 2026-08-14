@@ -34,6 +34,23 @@ jobs:
             8.0.x
             10.0.x
 
+      - name: 下载并校验 PowerShell 7.6.4
+        shell: powershell
+        run: |
+          $asset = 'PowerShell-7.6.4-win-x64.zip'
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $destination = Join-Path $env:RUNNER_TEMP 'PowerShell-7.6.4'
+          Invoke-WebRequest "https://github.com/PowerShell/PowerShell/releases/download/v7.6.4/$asset" -OutFile $archive
+          $expected = '80832551C52809301E6071C8BAC977BEB5A2F1EC953EB4DB9F94DEB953333793'
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw "PowerShell 7.6.4 校验失败：$actual" }
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $pwsh = Join-Path $destination 'pwsh.exe'
+          if ((& $pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()') -ne '7.6.4') {
+            throw '下载的 PowerShell 版本不是 7.6.4。'
+          }
+          "PSAI_PWSH=$pwsh" >> $env:GITHUB_ENV
+
       - name: 读取模块版本
         shell: pwsh
         run: |
@@ -64,18 +81,43 @@ jobs:
           }
 
       - name: 构建发布包
-        shell: pwsh
-        run: ./build.ps1 -Restore -Configuration Release -Package
+        shell: powershell
+        run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./build.ps1 -Restore -Configuration Release -Package'
 
       - name: 运行完整回归
-        shell: pwsh
-        run: ./tests/run.ps1
+        shell: powershell
+        run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./tests/run.ps1'
+
+      - name: 验证 5.1 x64、5.1 x86 与 7.6.4 共享状态
+        shell: powershell
+        run: |
+          $module = (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1").Path
+          $state = Join-Path $env:RUNNER_TEMP 'PSAITerminal.Hosts'
+          $config = Join-Path $state 'config'
+          $data = Join-Path $state 'data'
+          $credential = 'PSAITerminal/Test/CI-' + [guid]::NewGuid().ToString('N')
+          $x64 = Join-Path $env:windir 'System32/WindowsPowerShell/v1.0/powershell.exe'
+          $x86 = Join-Path $env:windir 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
+          & $x64 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/parse.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 x64 语法检查失败。' }
+          & $env:PSAI_PWSH -NoLogo -NoProfile -NonInteractive -File ./tests/parse.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7.6.4 语法检查失败。' }
+          & $x86 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/parse.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 x86 语法检查失败。' }
+          & $x64 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/host-probe.ps1 -ModulePath $module -ConfigPath $config -DataPath $data -StoreEntryTarget $credential -Phase Create
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 x64 回归失败。' }
+          & $env:PSAI_PWSH -NoLogo -NoProfile -NonInteractive -File ./tests/host-probe.ps1 -ModulePath $module -ConfigPath $config -DataPath $data -StoreEntryTarget $credential -Phase Update
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7.6.4 回归失败。' }
+          & $x86 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ./tests/host-probe.ps1 -ModulePath $module -ConfigPath $config -DataPath $data -StoreEntryTarget $credential -Phase Verify
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 x86 回归失败。' }
 
       - name: 检查 C# 格式
         shell: pwsh
         run: |
           dotnet format ./src/PSAITerminal.csproj --verify-no-changes --no-restore
           if ($LASTEXITCODE -ne 0) { throw "核心项目格式检查失败：$LASTEXITCODE" }
+          dotnet format ./src/PowerShell7/PSAITerminal.PowerShell7.csproj --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成项目格式检查失败：$LASTEXITCODE" }
           dotnet format ./tools/InteractiveSmoke/InteractiveSmoke.csproj --verify-no-changes
           if ($LASTEXITCODE -ne 0) { throw "ConPTY 项目格式检查失败：$LASTEXITCODE" }
 
@@ -89,6 +131,8 @@ jobs:
             './module/PSAITerminal.psd1'
             './module/PSAITerminal.psm1'
             './tests/run.ps1'
+            './tests/host-probe.ps1'
+            './tests/parse.ps1'
           )
           foreach ($script in $scripts) {
             $tokens = $null
@@ -102,8 +146,14 @@ jobs:
         run: |
           dotnet run --project ./tools/InteractiveSmoke/InteractiveSmoke.csproj `
             --configuration Release -- `
-            (Get-Command pwsh).Source `
+            $env:PSAI_PWSH `
             (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7.6.4 ConPTY 失败。' }
+          dotnet run --project ./tools/InteractiveSmoke/InteractiveSmoke.csproj `
+            --configuration Release -- `
+            (Join-Path $env:windir 'System32/WindowsPowerShell/v1.0/powershell.exe') `
+            (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 ConPTY 失败。' }
 
       - name: 检查发布内容并生成校验和
         shell: pwsh
@@ -114,6 +164,7 @@ jobs:
             'PSAITerminal.psd1'
             'PSAITerminal.psm1'
             'bin/PSAITerminal.dll'
+            'bin/PSAITerminal.PowerShell7.dll'
             'README.md'
             'CHANGELOG.md'
             'LICENSE'
@@ -132,6 +183,9 @@ jobs:
           if ($manifest.Version -ne [version]$env:PSAI_VERSION) { throw "发布清单版本不一致：$($manifest.Version)" }
           $assembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.dll'))
           if ($assembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "程序集版本不一致：$($assembly.Version)" }
+          $integrationAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.PowerShell7.dll'))
+          if ($integrationAssembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "集成程序集版本不一致：$($integrationAssembly.Version)" }
+          if (-not (Test-Path -LiteralPath "./out/PSAITerminal.$env:PSAI_VERSION.nupkg")) { throw 'Gallery nupkg 未生成。' }
           $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $archive
           "$($hash.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($archive))" |
             Set-Content -LiteralPath './out/SHA256SUMS-Windows.txt' -Encoding ascii
@@ -143,5 +197,6 @@ jobs:
           path: |
             out/PSAITerminal-${{ env.PSAI_VERSION }}
             out/PSAITerminal-${{ env.PSAI_VERSION }}.zip
+            out/PSAITerminal.${{ env.PSAI_VERSION }}.nupkg
             out/SHA256SUMS-Windows.txt
           if-no-files-found: error
