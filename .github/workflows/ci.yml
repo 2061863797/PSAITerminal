@@ -4,6 +4,12 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 预览标签（例如 preview1；留空则构建稳定候选）
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -53,10 +59,19 @@ jobs:
 
       - name: 读取模块版本
         shell: pwsh
+        env:
+          PSAI_WORKFLOW_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           $version = [string](Import-PowerShellDataFile ./module/PSAITerminal.psd1).ModuleVersion
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "模块版本格式无效：$version" }
+          $prerelease = [string]$env:PSAI_WORKFLOW_PRERELEASE
+          if ($prerelease -and $prerelease -notmatch '^[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*$') {
+            throw "预览标签格式无效：$prerelease"
+          }
+          $releaseLabel = if ($prerelease) { "$version-$prerelease" } else { $version }
           "PSAI_VERSION=$version" >> $env:GITHUB_ENV
+          "PSAI_PRERELEASE=$prerelease" >> $env:GITHUB_ENV
+          "PSAI_RELEASE_LABEL=$releaseLabel" >> $env:GITHUB_ENV
 
       - name: 安装 PSScriptAnalyzer
         shell: pwsh
@@ -82,7 +97,14 @@ jobs:
 
       - name: 构建发布包
         shell: pwsh
-        run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./build.ps1 -Restore -Configuration Release -Package'
+        run: |
+          $arguments = @(
+            '-NoLogo', '-NoProfile', '-File', './build.ps1',
+            '-Restore', '-Configuration', 'Release', '-Package'
+          )
+          if ($env:PSAI_PRERELEASE) { $arguments += @('-Prerelease', $env:PSAI_PRERELEASE) }
+          & $env:PSAI_PWSH @arguments
+          if ($LASTEXITCODE -ne 0) { throw "构建发布包失败：$LASTEXITCODE" }
 
       - name: 检查 NuGet 已知漏洞
         shell: pwsh
@@ -116,7 +138,7 @@ jobs:
       - name: 验证 5.1 x64、5.1 x86 与 7.6.4 共享状态
         shell: pwsh
         run: |
-          $module = (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1").Path
+          $module = (Resolve-Path "./out/PSAITerminal-$env:PSAI_RELEASE_LABEL/PSAITerminal.psd1").Path
           $state = Join-Path $env:RUNNER_TEMP 'PSAITerminal.Hosts'
           $config = Join-Path $state 'config'
           $data = Join-Path $state 'data'
@@ -172,19 +194,19 @@ jobs:
           dotnet run --project ./tools/InteractiveSmoke/InteractiveSmoke.csproj `
             --configuration Release -- `
             $env:PSAI_PWSH `
-            (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+            (Resolve-Path "./out/PSAITerminal-$env:PSAI_RELEASE_LABEL/PSAITerminal.psd1")
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 7.6.4 ConPTY 失败。' }
           dotnet run --project ./tools/InteractiveSmoke/InteractiveSmoke.csproj `
             --configuration Release -- `
             (Join-Path $env:windir 'System32/WindowsPowerShell/v1.0/powershell.exe') `
-            (Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION/PSAITerminal.psd1")
+            (Resolve-Path "./out/PSAITerminal-$env:PSAI_RELEASE_LABEL/PSAITerminal.psd1")
           if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 ConPTY 失败。' }
 
       - name: 检查发布内容并生成校验和
         shell: pwsh
         run: |
-          $package = Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION"
-          $archive = Resolve-Path "./out/PSAITerminal-$env:PSAI_VERSION.zip"
+          $package = Resolve-Path "./out/PSAITerminal-$env:PSAI_RELEASE_LABEL"
+          $archive = Resolve-Path "./out/PSAITerminal-$env:PSAI_RELEASE_LABEL.zip"
           $expected = @(
             'PSAITerminal.psd1'
             'PSAITerminal.psm1'
@@ -206,11 +228,15 @@ jobs:
           }
           $manifest = Test-ModuleManifest (Join-Path $package 'PSAITerminal.psd1')
           if ($manifest.Version -ne [version]$env:PSAI_VERSION) { throw "发布清单版本不一致：$($manifest.Version)" }
+          $manifestPrerelease = [string]$manifest.PrivateData.PSData.Prerelease
+          if ($manifestPrerelease -ne [string]$env:PSAI_PRERELEASE) {
+            throw "发布清单预览标签不一致：$manifestPrerelease"
+          }
           $assembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.dll'))
           if ($assembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "程序集版本不一致：$($assembly.Version)" }
           $integrationAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.PowerShell7.dll'))
           if ($integrationAssembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "集成程序集版本不一致：$($integrationAssembly.Version)" }
-          if (-not (Test-Path -LiteralPath "./out/PSAITerminal.$env:PSAI_VERSION.nupkg")) { throw 'Gallery nupkg 未生成。' }
+          if (-not (Test-Path -LiteralPath "./out/PSAITerminal.$env:PSAI_RELEASE_LABEL.nupkg")) { throw 'Gallery nupkg 未生成。' }
           $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $archive
           "$($hash.Hash.ToLowerInvariant())  $([IO.Path]::GetFileName($archive))" |
             Set-Content -LiteralPath './out/SHA256SUMS-Windows.txt' -Encoding ascii
@@ -218,10 +244,10 @@ jobs:
       - name: 上传发布候选包
         uses: actions/upload-artifact@v4
         with:
-          name: PSAITerminal-${{ env.PSAI_VERSION }}-Windows
+          name: PSAITerminal-${{ env.PSAI_RELEASE_LABEL }}-Windows
           path: |
-            out/PSAITerminal-${{ env.PSAI_VERSION }}
-            out/PSAITerminal-${{ env.PSAI_VERSION }}.zip
-            out/PSAITerminal.${{ env.PSAI_VERSION }}.nupkg
+            out/PSAITerminal-${{ env.PSAI_RELEASE_LABEL }}
+            out/PSAITerminal-${{ env.PSAI_RELEASE_LABEL }}.zip
+            out/PSAITerminal.${{ env.PSAI_RELEASE_LABEL }}.nupkg
             out/SHA256SUMS-Windows.txt
           if-no-files-found: error
