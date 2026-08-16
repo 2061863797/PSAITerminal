@@ -1673,10 +1673,8 @@ function Invoke-AIModelText {
 
     $text = [Text.StringBuilder]::new()
     $parsed = 0
-    $terminal = $false
+    $responseState = [ordered]@{Terminal=$false;InputTokens=0L;OutputTokens=0L}
     $first = $true
-    [long]$inputTokens = 0
-    [long]$outputTokens = 0
     $toolCalls = [ordered]@{}
     $toolItemMap = @{}
     $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
@@ -1686,7 +1684,7 @@ function Invoke-AIModelText {
         Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken | ForEach-Object {
             $payload = [string]$_
             if (-not $payload) { return }
-            if ($payload -eq '[DONE]') { $terminal = $true; return }
+            if ($payload -eq '[DONE]') { $responseState.Terminal = $true; return }
             try { $chunk = $payload | ConvertFrom-Json -ErrorAction Stop }
             catch { throw "模型接口返回了无法解析的流数据：$(Protect-AIText $payload 1024)" }
             $parsed++
@@ -1694,7 +1692,7 @@ function Invoke-AIModelText {
             switch ([string]$Model.protocol) {
                 'OpenAIChat' {
                     $usage = Get-AIProperty $chunk 'usage'
-                    if ($usage) { $inputTokens=[long](Get-AIProperty $usage 'prompt_tokens');$outputTokens=[long](Get-AIProperty $usage 'completion_tokens') }
+                    if ($usage) { $responseState.InputTokens=[long](Get-AIProperty $usage 'prompt_tokens');$responseState.OutputTokens=[long](Get-AIProperty $usage 'completion_tokens') }
                     $choices = @(Get-AIProperty $chunk 'choices')
                     if ($choices.Count) {
                         $choice = $choices[0]
@@ -1714,7 +1712,7 @@ function Invoke-AIModelText {
                             $arguments = [string](Get-AIProperty $function 'arguments')
                             if ($arguments) { $toolCalls[$index].arguments += $arguments }
                         }
-                        if ($null -ne (Get-AIProperty $choice 'finish_reason')) { $terminal = $true }
+                        if ($null -ne (Get-AIProperty $choice 'finish_reason')) { $responseState.Terminal = $true }
                     }
                 }
                 'OpenAIResponses' {
@@ -1741,9 +1739,9 @@ function Invoke-AIModelText {
                         if (Test-AIMapContains $toolCalls $key) { $toolCalls[$key].arguments = [string](Get-AIProperty $chunk 'arguments') }
                     }
                     elseif ($type -eq 'response.completed') {
-                        $terminal = $true
+                        $responseState.Terminal = $true
                         $usage = Get-AIProperty (Get-AIProperty $chunk 'response') 'usage'
-                        if ($usage) { $inputTokens=[long](Get-AIProperty $usage 'input_tokens');$outputTokens=[long](Get-AIProperty $usage 'output_tokens') }
+                        if ($usage) { $responseState.InputTokens=[long](Get-AIProperty $usage 'input_tokens');$responseState.OutputTokens=[long](Get-AIProperty $usage 'output_tokens') }
                     }
                 }
                 'Anthropic' {
@@ -1770,17 +1768,17 @@ function Invoke-AIModelText {
                             if (Test-AIMapContains $toolCalls $key) { $toolCalls[$key].arguments += [string](Get-AIProperty $blockDelta 'partial_json') }
                         }
                     }
-                    elseif ($type -eq 'message_stop') { $terminal = $true }
+                    elseif ($type -eq 'message_stop') { $responseState.Terminal = $true }
                     $usage = Get-AIProperty (Get-AIProperty $chunk 'message') 'usage'
-                    if ($usage) { $inputTokens=[long](Get-AIProperty $usage 'input_tokens');$outputTokens=[long](Get-AIProperty $usage 'output_tokens') }
+                    if ($usage) { $responseState.InputTokens=[long](Get-AIProperty $usage 'input_tokens');$responseState.OutputTokens=[long](Get-AIProperty $usage 'output_tokens') }
                 }
                 'GeminiNative' {
                     $metadata = Get-AIProperty $chunk 'usageMetadata'
-                    if ($metadata) { $inputTokens=[long](Get-AIProperty $metadata 'promptTokenCount');$outputTokens=[long](Get-AIProperty $metadata 'candidatesTokenCount') }
+                    if ($metadata) { $responseState.InputTokens=[long](Get-AIProperty $metadata 'promptTokenCount');$responseState.OutputTokens=[long](Get-AIProperty $metadata 'candidatesTokenCount') }
                     $candidates = @(Get-AIProperty $chunk 'candidates')
                     if ($candidates.Count) {
                         $candidate = $candidates[0]
-                        if (Get-AIProperty $candidate 'finishReason') { $terminal = $true }
+                        if (Get-AIProperty $candidate 'finishReason') { $responseState.Terminal = $true }
                         $parts = @(Get-AIProperty (Get-AIProperty $candidate 'content') 'parts')
                         foreach ($part in $parts) {
                             $functionCall = Get-AIProperty $part 'functionCall'
@@ -1792,7 +1790,7 @@ function Invoke-AIModelText {
                     }
                 }
                 'Ollama' {
-                    if ([bool](Get-AIProperty $chunk 'done')) { $terminal = $true }
+                    if ([bool](Get-AIProperty $chunk 'done')) { $responseState.Terminal = $true }
                     $message = Get-AIProperty $chunk 'message'
                     $delta = Get-AIProperty $message 'content'
                     foreach ($call in @(Get-AIProperty $message 'tool_calls')) {
@@ -1803,8 +1801,8 @@ function Invoke-AIModelText {
                         if ($arguments -isnot [string]) { $arguments = $arguments | ConvertTo-Json -Depth 30 -Compress }
                         $toolCalls[$key] = [ordered]@{id=[string](Get-AIProperty $call 'id');name=[string](Get-AIProperty $function 'name');arguments=[string]$arguments}
                     }
-                    $inputTokens = [long](Get-AIProperty $chunk 'prompt_eval_count')
-                    $outputTokens = [long](Get-AIProperty $chunk 'eval_count')
+                    $responseState.InputTokens = [long](Get-AIProperty $chunk 'prompt_eval_count')
+                    $responseState.OutputTokens = [long](Get-AIProperty $chunk 'eval_count')
                 }
             }
             if ($delta) {
@@ -1824,9 +1822,9 @@ function Invoke-AIModelText {
         $reader.Dispose(); $response.Dispose(); $request.Dispose(); $client.Dispose(); $linkedSource.Dispose(); $timeoutSource.Dispose(); $secret=$null
     }
     if ($parsed -eq 0) { throw '模型流式响应中没有可解析的数据。' }
-    if (-not $terminal) { throw '模型流式响应在完成标志之前中断。' }
+    if (-not $responseState.Terminal) { throw '模型流式响应在完成标志之前中断。' }
     if ($text.Length -eq 0 -and $toolCalls.Count -eq 0) { throw '模型没有返回文本或工具调用。' }
-    [pscustomobject]@{Text=$text.ToString();ToolCalls=@($toolCalls.Values);InputTokens=$inputTokens;OutputTokens=$outputTokens}
+    [pscustomobject]@{Text=$text.ToString();ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
 }
 
 function Read-AIChoice([string]$Prompt, [int[]]$Allowed, [Nullable[int]]$Default) {
