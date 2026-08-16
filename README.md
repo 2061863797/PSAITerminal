@@ -73,7 +73,7 @@ PowerShell 具备智能化交互能力。
 ## PowerShell Gallery
 
 ``` powershell
-Install-Module PSAITerminal -Prerelease
+Install-Module -Name PSAITerminal -AllowPrerelease
 ```
 
 或者使用 GitHub Release 安装包：
