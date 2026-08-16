@@ -3,7 +3,16 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
 $releaseVersion = ([version](Import-PowerShellDataFile -LiteralPath (Join-Path $root 'module/PSAITerminal.psd1')).ModuleVersion).ToString()
-$moduleOutput = Join-Path $root "out/PSAITerminal-$releaseVersion"
+$releaseLabel = if ([string]::IsNullOrWhiteSpace($env:PSAI_RELEASE_LABEL)) {
+    $releaseVersion
+} else {
+    [string]$env:PSAI_RELEASE_LABEL
+}
+if ($releaseLabel -ne $releaseVersion -and
+    $releaseLabel -notmatch ('^' + [regex]::Escape($releaseVersion) + '-[0-9A-Za-z]+(?:-[0-9A-Za-z]+)*$')) {
+    throw "测试发布标签无效：$releaseLabel"
+}
+$moduleOutput = Join-Path $root "out/PSAITerminal-$releaseLabel"
 $modulePath = Join-Path $moduleOutput 'PSAITerminal.psd1'
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("PSAITerminal.Tests." + [guid]::NewGuid().ToString('N'))
 $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'config'
