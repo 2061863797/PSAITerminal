@@ -75,7 +75,7 @@ PowerShell 具备智能化交互能力。
 ``` powershell
 Install-Module -Name PSAITerminal -AllowPrerelease
 ```
-https://www.powershellgallery.com/packages/PSAITerminal/0.6.0-preview1查看完整下载
+https://www.powershellgallery.com/packages/PSAITerminal/0.6.0-preview1 查看完整下载
 
 或者使用 GitHub Release 安装包：
 
