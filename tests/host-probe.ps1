@@ -81,8 +81,8 @@ $harnessScript = & $module {
     New-AITopLevelHarnessScript "[pscustomobject]@{RunId='host-probe';StepId='host-probe';ApprovalDigest=('a'*64);ApprovalRevision=1;Command='Get-Date | Out-Null'}"
 }
 function global:Start-PSAIToolExecution {
-    param($RunId,$StepId,$ApprovalDigest,[long]$ApprovalRevision)
-    [void]$RunId; [void]$StepId; [void]$ApprovalDigest; [void]$ApprovalRevision
+    param($RunId,$StepId,$Command,$ApprovalDigest,[long]$ApprovalRevision)
+    [void]$RunId; [void]$StepId; [void]$Command; [void]$ApprovalDigest; [void]$ApprovalRevision
 }
 function global:Complete-PSAIToolExecution {
     param($RunId,$StepId,[bool]$Succeeded,$Output)

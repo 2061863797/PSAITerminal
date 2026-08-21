@@ -2694,6 +2694,7 @@ function Start-PSAIToolExecution {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$StepId,
+        [Parameter(Mandatory)][string]$Command,
         [Parameter(Mandatory)][string]$ApprovalDigest,
         [Parameter(Mandatory)][long]$ApprovalRevision
     )
@@ -2706,12 +2707,15 @@ function Start-PSAIToolExecution {
     }
     $currentRevision = Get-AIRevision $run 'Run'
     $currentDigest = Get-AIApprovalDigest ([string]$run.id) ([string]$proposal.stepId) ([string]$proposal.command)
+    $executionDigest = Get-AIApprovalDigest ([string]$run.id) ([string]$proposal.stepId) $Command
     $currentRisk = [string](Get-AICommandRisk ([string]$proposal.command))
     if ($ApprovalDigest -notmatch '^[a-f0-9]{64}$' -or
         $ApprovalRevision -ne $currentRevision -or
         $ApprovalRevision -ne [long]$proposal.approvalRevision -or
         $ApprovalDigest -cne [string]$proposal.approvalDigest -or
         $ApprovalDigest -cne $currentDigest -or
+        $ApprovalDigest -cne $executionDigest -or
+        $Command -cne [string]$proposal.command -or
         $currentRisk -ne [string]$proposal.approvalRisk) {
         throw '命令批准已过期，或命令、风险和 Run 修订号已经变化；未执行任何命令，请重新确认。'
     }
@@ -2863,7 +2867,7 @@ function New-AITopLevelHarnessScript([string]$StartExpression) {
 ${STEP} = {START}
 try {
     while ($null -ne ${STEP}) {
-        Start-PSAIToolExecution -RunId ([string]${STEP}.RunId) -StepId ([string]${STEP}.StepId) -ApprovalDigest ([string]${STEP}.ApprovalDigest) -ApprovalRevision ([long]${STEP}.ApprovalRevision)
+        Start-PSAIToolExecution -RunId ([string]${STEP}.RunId) -StepId ([string]${STEP}.StepId) -Command ([string]${STEP}.Command) -ApprovalDigest ([string]${STEP}.ApprovalDigest) -ApprovalRevision ([long]${STEP}.ApprovalRevision)
         ${SUCCESS} = $false
         ${OUTPUT_LIMIT} = if (${STEP}.PSObject.Properties['OutputLimit']) { [int]${STEP}.OutputLimit } else { 65536 }
         if (${OUTPUT_LIMIT} -lt 1024 -or ${OUTPUT_LIMIT} -gt 65536) { ${OUTPUT_LIMIT} = 65536 }

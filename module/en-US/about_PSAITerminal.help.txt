@@ -52,9 +52,13 @@ SAFETY CONFIRMATION
     Treat the complete command shown on the approval screen as authoritative.
     High-risk commands have no Enter-to-execute default and require a second confirmation.
     Approval is bound to the command digest and Run revision; changes require reapproval.
+    Rollback text is AI-generated guidance; the module does not automatically back up, undo,
+    or restore system state.
     Commands run with the current user's permissions in the current PowerShell session, not a sandbox.
 
 NOTES
     No model is bundled. The first installation starts in Off mode and does not connect automatically.
+    Packages are not Authenticode-signed. For manual installation, verify the SHA-256 published
+    with the official GitHub Release.
     API keys are never written to JSON. Windows uses Credential Manager.
     If the platform store is unavailable, SessionOnly can be selected.

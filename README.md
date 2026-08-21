@@ -43,6 +43,8 @@ PowerShell 具备智能化交互能力。
 
 高风险操作需要明确确认。
 
+这不是自动回滚功能：界面显示的回滚内容是 AI 生成的操作建议；模块不会自动备份、撤销或恢复系统状态。
+
 安全机制包括：
 
 -   命令 SHA-256 审批绑定
@@ -72,16 +74,37 @@ PowerShell 具备智能化交互能力。
 
 ## PowerShell Gallery
 
+当前 Gallery 候选版为 [`0.6.0-preview1`](https://www.powershellgallery.com/packages/PSAITerminal/0.6.0-preview1)。
+
+PowerShell 7.4 及以上：
+
 ``` powershell
-Install-Module -Name PSAITerminal -AllowPrerelease
+Install-PSResource -Name PSAITerminal -Prerelease -Repository PSGallery -Scope CurrentUser
 ```
-https://www.powershellgallery.com/packages/PSAITerminal/0.6.0-preview1 查看完整下载
+
+Windows PowerShell 5.1 自带的 PowerShellGet 1.0.0.1 不支持预览版。先升级
+PowerShellGet，关闭并重新打开 Windows PowerShell，再安装：
+
+``` powershell
+Install-Module -Name PowerShellGet -MinimumVersion 2.2.5 -Scope CurrentUser -Force -AllowClobber
+# 关闭并重新打开 Windows PowerShell
+Install-Module -Name PSAITerminal -AllowPrerelease -Repository PSGallery -Scope CurrentUser
+```
+
+正式版 `0.6.0` 发布后，两个宿主都可直接运行：
+
+``` powershell
+Install-Module -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
+```
 
 或者使用 GitHub Release 安装包：
 
 ``` powershell
-.\Install-PSAITerminal.ps1
+.\Install-PSAITerminal.ps1 -TargetHost Current
 ```
+
+当前包未做 Authenticode 代码签名。手动安装时请从官方 Release 下载，并核对
+`SHA256SUMS-Windows.txt`。
 
 ------------------------------------------------------------------------
 
@@ -145,6 +168,8 @@ Fn + F3
 -   Windows PowerShell 5.1 (x64/x86)
 -   PowerShell 7.4+
 
+当前 `0.6.0` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
+
 当前发布版本：
 
 -   Windows only
@@ -176,6 +201,12 @@ ai
 API Key 不会保存到普通 JSON 配置文件。
 
 Windows 默认使用 Credential Manager 保存凭据。
+
+Windows PowerShell 5.1 与 PowerShell 7 共用以下配置和运行数据：
+
+| 平台 | 配置目录 | 数据目录 |
+| --- | --- | --- |
+| Windows | `<Documents>/PowerShell/PSAITerminal` | `%LOCALAPPDATA%/PowerShell/PSAITerminal` |
 
 ------------------------------------------------------------------------
 

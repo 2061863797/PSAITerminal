@@ -800,7 +800,7 @@ try {
         Assert-True ([long]$step.ApprovalRevision -gt 0) '待执行步骤必须绑定批准时的 Run 修订号。'
         Select-PSAIModel alternate | Out-Null
         Start-PSAIToolExecution -RunId $step.RunId -StepId $step.StepId `
-            -ApprovalDigest $step.ApprovalDigest -ApprovalRevision $step.ApprovalRevision
+            -Command $step.Command -ApprovalDigest $step.ApprovalDigest -ApprovalRevision $step.ApprovalRevision
         $next = Complete-PSAIToolExecution -RunId $step.RunId -StepId $step.StepId -Succeeded $true -Output '2026-08-11'
         Assert-Equal $null $next '模型总结后不应继续产生工具步骤。'
         Assert-Equal 'Completed' (Get-PSAIRun -Id $step.RunId).State 'Run 应完成执行、观察和总结循环。'
@@ -877,13 +877,23 @@ try {
     }
     $expiredApprovalMessage = try {
         Start-PSAIToolExecution -RunId $approvalBinding.Old.RunId -StepId $approvalBinding.Old.StepId `
-            -ApprovalDigest $approvalBinding.Old.ApprovalDigest -ApprovalRevision $approvalBinding.Old.ApprovalRevision
+            -Command $approvalBinding.Old.Command -ApprovalDigest $approvalBinding.Old.ApprovalDigest `
+            -ApprovalRevision $approvalBinding.Old.ApprovalRevision
         ''
     } catch { $_.Exception.Message }
     Assert-Match $expiredApprovalMessage '批准已过期' '命令在批准后发生变化时必须拒绝旧执行票据。'
     Assert-Equal 'AwaitingApproval' (Get-PSAIRun -Id $approvalBinding.New.RunId).State '拒绝旧执行票据后不能改变 Run 状态。'
+    $tamperedCommandMessage = try {
+        Start-PSAIToolExecution -RunId $approvalBinding.New.RunId -StepId $approvalBinding.New.StepId `
+            -Command 'Remove-Item test.txt' -ApprovalDigest $approvalBinding.New.ApprovalDigest `
+            -ApprovalRevision $approvalBinding.New.ApprovalRevision
+        ''
+    } catch { $_.Exception.Message }
+    Assert-Match $tamperedCommandMessage '批准已过期' '实际执行命令与批准命令不一致时必须拒绝执行。'
+    Assert-Equal 'AwaitingApproval' (Get-PSAIRun -Id $approvalBinding.New.RunId).State '拒绝内存命令篡改后不能改变 Run 状态。'
     Start-PSAIToolExecution -RunId $approvalBinding.New.RunId -StepId $approvalBinding.New.StepId `
-        -ApprovalDigest $approvalBinding.New.ApprovalDigest -ApprovalRevision $approvalBinding.New.ApprovalRevision
+        -Command $approvalBinding.New.Command -ApprovalDigest $approvalBinding.New.ApprovalDigest `
+        -ApprovalRevision $approvalBinding.New.ApprovalRevision
     $approvedRun = Get-PSAIRun -Id $approvalBinding.New.RunId
     $approvedCommand = & $module { param($id) [string](Import-AIRun $id).pendingProposal.command } $approvalBinding.New.RunId
     Assert-Equal 'ExecutingTool' $approvedRun.State '只有与当前命令和修订号一致的执行票据才能领取步骤。'
@@ -971,8 +981,8 @@ try {
     Assert-Equal $false $successHarness.Contains('@(. ([scriptblock]::Create') 'Agent Harness 不能先把全部命令输出缓存到数组。'
     Remove-Module PSAITerminal
     function global:Start-PSAIToolExecution {
-        param($RunId,$StepId,$ApprovalDigest,[long]$ApprovalRevision)
-        [void]$RunId; [void]$StepId; [void]$ApprovalDigest; [void]$ApprovalRevision
+        param($RunId,$StepId,$Command,$ApprovalDigest,[long]$ApprovalRevision)
+        [void]$RunId; [void]$StepId; [void]$Command; [void]$ApprovalDigest; [void]$ApprovalRevision
     }
     function global:Complete-PSAIToolExecution {
         param($RunId,$StepId,[bool]$Succeeded,$Output)
