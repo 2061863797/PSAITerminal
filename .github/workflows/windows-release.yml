@@ -1,4 +1,4 @@
-name: Windows 发布验证
+name: Windows 自动构建与发布
 
 on:
   push:

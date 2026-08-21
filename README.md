@@ -1,6 +1,6 @@
 # PSAITerminal
 
-[![CI](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml/badge.svg)](https://github.com/2061863797/PSAITerminal/actions/workflows/ci.yml)
+[![CI](https://github.com/2061863797/PSAITerminal/actions/workflows/windows-release.yml/badge.svg)](https://github.com/2061863797/PSAITerminal/actions/workflows/windows-release.yml)
 
 > AI-powered terminal assistant for Windows PowerShell.
 
