@@ -74,30 +74,21 @@ PowerShell 具备智能化交互能力。
 
 ## PowerShell Gallery
 
-当前 Gallery 候选版为 [`0.6.0-preview1`](https://www.powershellgallery.com/packages/PSAITerminal/0.6.0-preview1)。
+当前正式版本为 [`1.0.0`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.0)。
 
-PowerShell 7.4 及以上：
-
-``` powershell
-Install-PSResource -Name PSAITerminal -Prerelease -Repository PSGallery -Scope CurrentUser
-```
-
-Windows PowerShell 5.1 自带的 PowerShellGet 1.0.0.1 不支持预览版。先升级
-PowerShellGet，关闭并重新打开 Windows PowerShell，再安装：
-
-``` powershell
-Install-Module -Name PowerShellGet -MinimumVersion 2.2.5 -Scope CurrentUser -Force -AllowClobber
-# 关闭并重新打开 Windows PowerShell
-Install-Module -Name PSAITerminal -AllowPrerelease -Repository PSGallery -Scope CurrentUser
-```
-
-正式版 `1.0.0` 发布后，两个宿主都可直接运行：
+两个宿主（Windows PowerShell 5.1 与 PowerShell 7.4+）均可直接运行：
 
 ``` powershell
 Install-Module -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
 ```
 
-或者使用 GitHub Release 安装包：
+或者使用 PowerShell 7 推荐的 `PSResourceGet`：
+
+``` powershell
+Install-PSResource -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
+```
+
+或者使用 GitHub Release 安装包本地安装：
 
 ``` powershell
 .\Install-PSAITerminal.ps1 -TargetHost Current
