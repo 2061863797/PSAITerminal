@@ -15,7 +15,7 @@ $ErrorActionPreference = 'Stop'
 if ($NoProfileIntegration -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
     throw '-NoProfileIntegration 与 -ProfilePath 不能同时使用。'
 }
-if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 0.6.0 仅支持 Windows。' }
+if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 1.0.0 仅支持 Windows。' }
 if ($TargetHost -eq 'Both' -and (-not [string]::IsNullOrWhiteSpace($ModuleRoot) -or -not [string]::IsNullOrWhiteSpace($ProfilePath))) {
     throw '-TargetHost Both 不能与 -ModuleRoot 或 -ProfilePath 同时使用。'
 }

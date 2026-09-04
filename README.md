@@ -91,7 +91,7 @@ Install-Module -Name PowerShellGet -MinimumVersion 2.2.5 -Scope CurrentUser -For
 Install-Module -Name PSAITerminal -AllowPrerelease -Repository PSGallery -Scope CurrentUser
 ```
 
-正式版 `0.6.0` 发布后，两个宿主都可直接运行：
+正式版 `1.0.0` 发布后，两个宿主都可直接运行：
 
 ``` powershell
 Install-Module -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
@@ -168,7 +168,7 @@ Fn + F3
 -   Windows PowerShell 5.1 (x64/x86)
 -   PowerShell 7.4+
 
-当前 `0.6.0` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
+当前 `1.0.0` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
 
 当前发布版本：
 

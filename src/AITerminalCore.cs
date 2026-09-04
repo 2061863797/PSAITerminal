@@ -891,6 +891,28 @@ public static class AITerminalAtomicFile
         }
     }
 
+    private const uint SddlRevision1 = 1;
+    private const uint DaclSecurityInformation = 0x00000004;
+    private const uint ProtectedDaclSecurityInformation = 0x80000000;
+    private const string PrivateDirectorySddl = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;BA)";
+    private const string PrivateFileSddl = "D:P(A;;FA;;;OW)(A;;FA;;;BA)";
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        string StringSecurityDescriptor,
+        uint StringSDRevision,
+        out IntPtr SecurityDescriptor,
+        out uint SecurityDescriptorSize);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool SetFileSecurityW(
+        string lpFileName,
+        uint SecurityInformation,
+        IntPtr pSecurityDescriptor);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr LocalFree(IntPtr hMem);
+
     public static void EnsurePrivateDirectory(string path)
     {
         if (string.IsNullOrEmpty(path))
@@ -901,8 +923,9 @@ public static class AITerminalAtomicFile
         Directory.CreateDirectory(fullPath);
         if (!AITerminalPlatform.IsWindows)
         {
-            throw new PlatformNotSupportedException("PSAITerminal 0.6.0 仅支持 Windows。");
+            throw new PlatformNotSupportedException("PSAITerminal 1.0.0 仅支持 Windows。");
         }
+        ApplyPrivateSecurity(fullPath, PrivateDirectorySddl);
     }
 
     public static void EnsurePrivateFile(string path)
@@ -914,7 +937,31 @@ public static class AITerminalAtomicFile
         string fullPath = Path.GetFullPath(path);
         if (!AITerminalPlatform.IsWindows)
         {
-            throw new PlatformNotSupportedException("PSAITerminal 0.6.0 仅支持 Windows。");
+            throw new PlatformNotSupportedException("PSAITerminal 1.0.0 仅支持 Windows。");
+        }
+        if (File.Exists(fullPath))
+        {
+            ApplyPrivateSecurity(fullPath, PrivateFileSddl);
+        }
+    }
+
+    private static void ApplyPrivateSecurity(string fullPath, string sddl)
+    {
+        if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SddlRevision1, out IntPtr pSecurityDescriptor, out _))
+        {
+            return;
+        }
+
+        try
+        {
+            _ = SetFileSecurityW(
+                fullPath,
+                DaclSecurityInformation | ProtectedDaclSecurityInformation,
+                pSecurityDescriptor);
+        }
+        finally
+        {
+            LocalFree(pSecurityDescriptor);
         }
     }
 }

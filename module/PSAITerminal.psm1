@@ -1,4 +1,27 @@
-﻿Set-StrictMode -Version 3.0
+﻿# <#
+# .SYNOPSIS
+#     PSAITerminal - 本地 AI 增强终端模块（支持 Windows PowerShell 5.1 与 PowerShell 7.4+）
+#
+# .DESCRIPTION
+#     模块结构索引（全景架构与领域分块）：
+#     - Region 1:  模块初始化、环境检测与全局状态
+#     - Region 2:  官方集成（PowerShell 7 预测器与反馈接入）
+#     - Region 3:  本地化与多语言字典
+#     - Region 4:  终端提示符（Prompt）安全包装与防重入
+#     - Region 5:  配置管理、原子读写与并发乐观锁
+#     - Region 6:  会话持久化与上下文压缩
+#     - Region 7:  凭据存储与安全脱敏（含内存密钥缓存）
+#     - Region 8:  命令 AST 安全分析与风险分级
+#     - Region 9:  REST HTTP 客户端与 SSE 流式解析引擎
+#     - Region 10: 交互式终端菜单与设置 UI
+#     - Region 11: Agent 任务调度、审批机制与顶层执行 Harness
+#     - Region 12: PSReadLine 按键拦截与智能输入路由
+#     - Region 13: Profile 自动加载注入与卸载清理
+#     - Region 14: 模块导出与清理钩子
+# #>
+
+#region 1. 模块初始化、环境检测与全局状态
+Set-StrictMode -Version 3.0
 
 $script:ModuleName = 'PSAITerminal'
 $script:HostEdition = if ($PSVersionTable.PSEdition) { [string]$PSVersionTable.PSEdition } else { 'Desktop' }
@@ -6,7 +29,7 @@ $script:HostVersion = [version]$PSVersionTable.PSVersion
 $script:IsWindowsPlatform = $env:OS -eq 'Windows_NT'
 $script:OfficialIntegrationAvailable = $false
 if (-not $script:IsWindowsPlatform) {
-    throw 'PSAITerminal 0.6.0 仅支持 Windows。'
+    throw 'PSAITerminal 1.0.0 仅支持 Windows。'
 }
 if ($script:HostEdition -eq 'Core') {
     if ($script:HostVersion -lt [version]'7.4') {
@@ -22,6 +45,8 @@ if ($script:HostEdition -eq 'Core') {
 $script:ValidModes = @('Off', 'AI', 'Auto')
 $script:ValidProtocols = @('Anthropic', 'OpenAIChat', 'OpenAIResponses', 'GeminiNative', 'Ollama')
 $script:SessionSecrets = @{}
+$script:SecretMaskingCache = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+$script:SecretMaskingCacheInitialized = $false
 $script:LastSubmittedCommand = $null
 $script:LastCommandResult = $null
 $script:PredictorEnabled = $false
@@ -51,7 +76,10 @@ $script:MaximumConfigBytes = 1MB
 $script:MaximumSessionBytes = 16MB
 $script:MaximumRunBytes = 4MB
 $script:FileLockTimeoutMilliseconds = 10000
+$script:LastSessionCompressionFailureUtc = $null
+#endregion
 
+#region 2. 官方集成（PowerShell 7 预测器与反馈接入）
 function Invoke-AIOfficialAddPrediction([string]$Command) {
     if ($script:OfficialIntegrationAvailable) {
         [PSAITerminal.AITerminalOfficialIntegration]::AddPrediction($Command)
@@ -74,7 +102,9 @@ function Test-AIOfficialFeedbackRegistered {
     if (-not $script:OfficialIntegrationAvailable) { return $false }
     [bool][PSAITerminal.AITerminalOfficialIntegration]::FeedbackRegistered
 }
+#endregion
 
+#region 3. 本地化与多语言字典
 function Get-AILanguage {
     if ($script:Config -and [string]$script:Config.language -in @('en-US','zh-CN')) {
         return [string]$script:Config.language
@@ -195,7 +225,9 @@ function Get-AIText([string]$Key, [object[]]$FormatArguments = @()) {
     if ($FormatArguments.Count -gt 0) { return $value -f $FormatArguments }
     $value
 }
+#endregion
 
+#region 4. 终端提示符（Prompt）安全包装与防重入
 function Get-AIPromptPrefix {
     switch ([string]$script:Config.mode) {
         'AI' { '[AI] ' }
@@ -331,7 +363,9 @@ function Unregister-AIPromptIntegration {
     $script:PSAIPromptWrapper = $null
     $script:PromptInvocationActive = $false
 }
+#endregion
 
+#region 5. 配置管理、原子读写与并发乐观锁
 function Get-AIUserHomeDirectory {
     $path = [Environment]::GetFolderPath('UserProfile')
     if ([string]::IsNullOrWhiteSpace($path)) { $path = $HOME }
@@ -730,6 +764,7 @@ function Initialize-AIState {
         try { Save-AIConfig }
         catch { Write-Warning "快捷键配置已在当前会话迁移，但暂时无法写入磁盘；下次启动会重试：$($_.Exception.Message)" }
     }
+    $script:SecretMaskingCacheInitialized = $false
 }
 
 function Save-AIConfig {
@@ -776,7 +811,9 @@ function Invoke-AIConfigMutation([scriptblock]$Mutation) {
         throw
     }
 }
+#endregion
 
+#region 6. 会话持久化与上下文压缩
 function New-AISessionObject([string]$Title) {
     $now = [DateTime]::UtcNow.ToString('O')
     [ordered]@{
@@ -1021,7 +1058,9 @@ function Clear-PSAISession {
         if ($Id -eq $script:Config.activeSession) { $script:CurrentSession = $latest }
     }
 }
+#endregion
 
+#region 7. 凭据存储与安全脱敏（含内存密钥缓存）
 function ConvertFrom-AISecureString([Security.SecureString]$Value) {
     $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Value)
     try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
@@ -1030,13 +1069,26 @@ function ConvertFrom-AISecureString([Security.SecureString]$Value) {
 
 function Get-AISecretTarget([string]$Name) { "PSAITerminal/Model/$Name" }
 
+function Update-AIMaskingSecretCache {
+    $script:SecretMaskingCache.Clear()
+    if ($script:Config -and $script:Config.models) {
+        foreach ($name in @($script:Config.models.Keys)) {
+            $secret = Get-AISecret ([string]$name)
+            if ($secret) { [void]$script:SecretMaskingCache.Add($secret) }
+        }
+    }
+    $script:SecretMaskingCacheInitialized = $true
+}
+
 function Save-AISecret([string]$Name, [string]$Secret, [switch]$SessionOnly) {
     if ($SessionOnly) {
         $script:SessionSecrets[$Name] = $Secret
+        if ($Secret) { [void]$script:SecretMaskingCache.Add($Secret) }
         return
     }
     [PSAITerminal.PlatformCredentialStore]::Set((Get-AISecretTarget $Name), $Secret)
     [void]$script:SessionSecrets.Remove($Name)
+    if ($Secret) { [void]$script:SecretMaskingCache.Add($Secret) }
     $script:LastSecretStoreError = $null
 }
 
@@ -1055,13 +1107,18 @@ function Get-AISecret([string]$Name) {
 function Remove-AISecret([string]$Name) {
     [void]$script:SessionSecrets.Remove($Name)
     [PSAITerminal.PlatformCredentialStore]::Remove((Get-AISecretTarget $Name))
+    Update-AIMaskingSecretCache
 }
 
 function Protect-AIText([AllowNull()][string]$Text, [int]$MaximumCharacters = 65536) {
-    $secrets = @($script:Config.models.Keys | ForEach-Object { Get-AISecret ([string]$_) } | Where-Object { $_ })
-    [PSAITerminal.AITerminalSecurity]::ProtectText($Text, [string[]]$secrets, $MaximumCharacters)
+    if (-not $script:SecretMaskingCacheInitialized) {
+        Update-AIMaskingSecretCache
+    }
+    [PSAITerminal.AITerminalSecurity]::ProtectText($Text, [string[]]$script:SecretMaskingCache, $MaximumCharacters)
 }
+#endregion
 
+#region 8. 命令 AST 安全分析与风险分级
 function Get-AICommandRisk([string]$Command) {
     $risk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell', $Command)
     if ($risk -eq [PSAITerminal.AITerminalRisk]::High) { return $risk }
@@ -1320,7 +1377,9 @@ function Remove-PSAIModel {
         throw $failure
     }
 }
+#endregion
 
+#region 9. REST HTTP 客户端与 SSE 流式解析引擎
 function Resolve-AIModelListEndpoint([string]$Protocol, [uri]$Endpoint) {
     [PSAITerminal.AITerminalEndpointResolver]::ResolveModelListEndpoint($Protocol, $Endpoint).AbsoluteUri
 }
@@ -1544,18 +1603,136 @@ function Add-AIToolsToRequestBody([Collections.IDictionary]$Body, [string]$Proto
     }
 }
 
-function New-AIRequestBody([Collections.IDictionary]$Model, [string]$Prompt, [switch]$EnableTools) {
-    $system = if ((Get-AILanguage) -eq 'en-US') {
+function Get-AIRuntimeContextText {
+    $lang = Get-AILanguage
+    $location = try { [string]$ExecutionContext.SessionState.Path.CurrentLocation } catch { '' }
+    if ([string]::IsNullOrWhiteSpace($location)) {
+        $location = try { [Environment]::CurrentDirectory } catch { '' }
+    }
+    $isAdmin = try {
+        ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { $false }
+
+    $hostDesc = if ($script:HostEdition -eq 'Desktop') { "Windows PowerShell $($script:HostVersion)" } else { "PowerShell $($script:HostVersion)" }
+    $syntaxRule = if ($script:HostEdition -eq 'Desktop') {
+        if ($lang -eq 'en-US') {
+            'Running on Windows PowerShell 5.1. Do NOT use &&, ||, ternary operator (?:), or ?? operator. Separate multiple commands using newlines or semicolons (;).'
+        } else {
+            '当前宿主为 Windows PowerShell 5.1。严禁使用 &&、|| 管道连接符，严禁使用三元运算符 ?: 或 ?? 空值合并操作符；多条命令必须用换行或分号 ; 分隔。'
+        }
+    } else {
+        if ($lang -eq 'en-US') {
+            'Running on PowerShell 7+. Modern PowerShell syntax is supported.'
+        } else {
+            '当前宿主为 PowerShell 7+。支持现代 PowerShell 语法。'
+        }
+    }
+
+    if ($lang -eq 'en-US') {
+        @"
+[Runtime Environment]
+- Host: $hostDesc
+- Working Directory: $location
+- Elevated (Admin): $isAdmin
+- Syntax Constraints: $syntaxRule
+"@
+    } else {
+        @"
+[运行时环境]
+- 宿主：$hostDesc
+- 当前目录：$location
+- 管理员权限：$(if($isAdmin){'是'}else{'否'})
+- 语法约束：$syntaxRule
+"@
+    }
+}
+
+function ConvertTo-AIProtocolMessages([Collections.IList]$StandardMessages, [string]$Protocol, [string]$SystemPrompt) {
+    switch ($Protocol) {
+        'Anthropic' {
+            $list = [Collections.Generic.List[object]]::new()
+            foreach ($item in $StandardMessages) {
+                $role = if ([string]$item.role -eq 'assistant') { 'assistant' } else { 'user' }
+                $content = [string]$item.content
+                if ($list.Count -gt 0 -and $list[$list.Count - 1].role -eq $role) {
+                    $list[$list.Count - 1].content += "`n`n$content"
+                } else {
+                    $list.Add([ordered]@{ role = $role; content = $content })
+                }
+            }
+            if ($list.Count -gt 0 -and $list[0].role -ne 'user') {
+                $list.Insert(0, [ordered]@{ role = 'user'; content = 'Hello' })
+            }
+            return $list
+        }
+        'GeminiNative' {
+            $list = [Collections.Generic.List[object]]::new()
+            foreach ($item in $StandardMessages) {
+                $role = if ([string]$item.role -eq 'assistant') { 'model' } else { 'user' }
+                $content = [string]$item.content
+                if ($list.Count -gt 0 -and $list[$list.Count - 1].role -eq $role) {
+                    $list[$list.Count - 1].parts[0].text += "`n`n$content"
+                } else {
+                    $list.Add([ordered]@{ role = $role; parts = @(@{ text = $content }) })
+                }
+            }
+            if ($list.Count -gt 0 -and $list[0].role -ne 'user') {
+                $list.Insert(0, [ordered]@{ role = 'user'; parts = @(@{ text = 'Hello' }) })
+            }
+            return $list
+        }
+        'OpenAIResponses' {
+            $lines = [Collections.Generic.List[string]]::new()
+            foreach ($item in $StandardMessages) {
+                $prefix = if ([string]$item.role -eq 'assistant') { 'AI' } else { 'User' }
+                $lines.Add("[$prefix] $($item.content)")
+            }
+            return ($lines -join "`n`n")
+        }
+        default {
+            $list = [Collections.Generic.List[object]]::new()
+            if ($SystemPrompt) {
+                $list.Add([ordered]@{ role = 'system'; content = $SystemPrompt })
+            }
+            foreach ($item in $StandardMessages) {
+                $role = if ([string]$item.role -eq 'assistant') { 'assistant' } else { 'user' }
+                $content = [string]$item.content
+                $list.Add([ordered]@{ role = $role; content = $content })
+            }
+            return $list
+        }
+    }
+}
+
+function New-AIRequestBody([Collections.IDictionary]$Model, [AllowNull()][string]$Prompt = $null,
+    [switch]$EnableTools, [AllowNull()][Collections.IList]$Messages = $null) {
+    $baseSystem = if ((Get-AILanguage) -eq 'en-US') {
         'You are an assistant running in the user''s local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.'
     } else {
         '你是运行在用户本地 PowerShell 中的助手。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。'
     }
-    $body = switch ([string]$Model.protocol) {
-        'Anthropic' { [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=@(@{role='user';content=$Prompt});stream=$true} }
-        'OpenAIChat' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
-        'OpenAIResponses' { [ordered]@{model=$Model.modelId;instructions=$system;input=$Prompt;stream=$true} }
-        'GeminiNative' { [ordered]@{systemInstruction=@{parts=@(@{text=$system})};contents=@(@{role='user';parts=@(@{text=$Prompt})})} }
-        'Ollama' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
+    $runtimeContext = Get-AIRuntimeContextText
+    $system = "$baseSystem`n`n$runtimeContext"
+    $protocol = [string]$Model.protocol
+    $hasMessages = ($null -ne $Messages -and $Messages.Count -gt 0)
+
+    $body = if ($hasMessages) {
+        $protocolMessages = ConvertTo-AIProtocolMessages $Messages $protocol $system
+        switch ($protocol) {
+            'Anthropic' { [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=$protocolMessages;stream=$true} }
+            'OpenAIChat' { [ordered]@{model=$Model.modelId;messages=$protocolMessages;stream=$true} }
+            'OpenAIResponses' { [ordered]@{model=$Model.modelId;instructions=$system;input=$protocolMessages;stream=$true} }
+            'GeminiNative' { [ordered]@{systemInstruction=@{parts=@(@{text=$system})};contents=$protocolMessages} }
+            'Ollama' { [ordered]@{model=$Model.modelId;messages=$protocolMessages;stream=$true} }
+        }
+    } else {
+        switch ($protocol) {
+            'Anthropic' { [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=@(@{role='user';content=$Prompt});stream=$true} }
+            'OpenAIChat' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
+            'OpenAIResponses' { [ordered]@{model=$Model.modelId;instructions=$system;input=$Prompt;stream=$true} }
+            'GeminiNative' { [ordered]@{systemInstruction=@{parts=@(@{text=$system})};contents=@(@{role='user';parts=@(@{text=$Prompt})})} }
+            'Ollama' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
+        }
     }
     if ($Model.parameters -is [Collections.IDictionary]) {
         if ($Model.protocol -eq 'GeminiNative') { $body.generationConfig = $Model.parameters }
@@ -1625,16 +1802,21 @@ function Read-AIStreamPayloads([IO.StreamReader]$Reader, [string]$Protocol, [Thr
 function Invoke-AIModelText {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][Collections.IDictionary]$Model,
-        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter()][string]$Prompt,
         [switch]$NoRender,
         [switch]$EnableTools,
         [AllowNull()][string]$SecretOverride,
+        [AllowNull()][Collections.IList]$Messages = $null,
         [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None
     )
     $endpoint = Resolve-AIRequestEndpoint $Model
     $secret = if ($Model.protocol -eq 'Ollama') { $null } elseif ($PSBoundParameters.ContainsKey('SecretOverride')) { $SecretOverride } else { Get-AISecret ([string]$Model.name) }
     if ($Model.protocol -ne 'Ollama' -and -not $secret) { throw "模型 '$($Model.name)' 没有可用 API Key。" }
-    $json = New-AIRequestBody $Model $Prompt -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
+    $json = if ($Messages -and $Messages.Count -gt 0) {
+        New-AIRequestBody $Model -Messages $Messages -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
+    } else {
+        New-AIRequestBody $Model -Prompt $Prompt -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
+    }
     $client = New-AIHttpClient ([uri]$endpoint)
     $timeoutSource = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds([int]$script:Config.execution.requestTimeoutSeconds))
     $linkedSource = [Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken, $timeoutSource.Token)
@@ -1822,11 +2004,20 @@ function Invoke-AIModelText {
         $reader.Dispose(); $response.Dispose(); $request.Dispose(); $client.Dispose(); $linkedSource.Dispose(); $timeoutSource.Dispose(); $secret=$null
     }
     if ($parsed -eq 0) { throw '模型流式响应中没有可解析的数据。' }
-    if (-not $responseState.Terminal) { throw '模型流式响应在完成标志之前中断。' }
+    if (-not $responseState.Terminal) {
+        if ($text.Length -gt 0 -or $toolCalls.Count -gt 0) {
+            Write-Verbose '模型流式响应在连接正常关闭前未包含显式完成标记，按已接收内容正常返回。'
+            $responseState.Terminal = $true
+        } else {
+            throw '模型流式响应在完成标志之前中断。'
+        }
+    }
     if ($text.Length -eq 0 -and $toolCalls.Count -eq 0) { throw '模型没有返回文本或工具调用。' }
     [pscustomobject]@{Text=$text.ToString();ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
 }
+#endregion
 
+#region 10. 交互式终端菜单与设置 UI
 function Read-AIChoice([string]$Prompt, [int[]]$Allowed, [Nullable[int]]$Default) {
     while ($true) {
         $suffix = if ($null -ne $Default) { Get-AIText 'DefaultPrompt' @($Default) } else { '' }
@@ -2290,6 +2481,22 @@ function Set-PSAITerminalOption {
     Get-PSAITerminalOption
 }
 
+function Format-AICompactTurnContent([string]$Content, [int]$MaxLines = 50, [int]$MaxChars = 3000) {
+    if ([string]::IsNullOrEmpty($Content)) { return $Content }
+    if ($Content.Length -le $MaxChars) { return $Content }
+    $lines = $Content -split "\r?\n"
+    if ($lines.Length -le $MaxLines) { return $Content }
+    $head = $lines[0..24] -join "`n"
+    $tail = $lines[($lines.Length - 25)..($lines.Length - 1)] -join "`n"
+    $omitted = $lines.Length - 50
+    $note = if ((Get-AILanguage) -eq 'en-US') {
+        "[... Middle $omitted lines omitted for context efficiency, full output preserved in session file ...]"
+    } else {
+        "[... 为优化上下文效率已省略中间 $omitted 行输出，完整日志保存在本地会话文件中 ...]"
+    }
+    "$head`n`n$note`n`n$tail"
+}
+
 function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
     if (-not $script:CurrentSession) { return '' }
     $parts = [Collections.Generic.List[string]]::new()
@@ -2299,7 +2506,8 @@ function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
     for ($index=$start; $index -lt $turns.Count; $index++) {
         $turn = $turns[$index]
         $label = switch ([string]$turn.role) { 'user' {'用户'} 'assistant' {'AI'} 'tool' {'工具结果'} default {[string]$turn.role} }
-        $parts.Add("[$label/$($turn.kind)] $($turn.content)")
+        $content = Format-AICompactTurnContent ([string]$turn.content)
+        $parts.Add("[$label/$($turn.kind)] $content")
     }
     $value = Protect-AIText ($parts -join "`n`n") -1
     if ($value.Length -le $MaximumCharacters) { return $value }
@@ -2312,6 +2520,10 @@ function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
 
 function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.CancellationToken]$CancellationToken) {
     if (-not $script:CurrentSession) { return }
+    if ($script:LastSessionCompressionFailureUtc) {
+        $elapsedSeconds = ([DateTime]::UtcNow - $script:LastSessionCompressionFailureUtc).TotalSeconds
+        if ($elapsedSeconds -ge 0 -and $elapsedSeconds -lt 300) { return }
+    }
     $turns = @($script:CurrentSession.turns)
     $recentCount = [int]$script:Config.execution.recentTurns
     if ($turns.Count -le $recentCount) { return }
@@ -2340,7 +2552,9 @@ function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.
         $script:CurrentSession.compactedTurnCount = $targetCount
         Add-AISessionUsageValues $script:CurrentSession ([long]$summaryResult.InputTokens) ([long]$summaryResult.OutputTokens)
         Save-AISession
+        $script:LastSessionCompressionFailureUtc = $null
     } catch {
+        $script:LastSessionCompressionFailureUtc = [DateTime]::UtcNow
         $script:CurrentSession.summary = $previousSummary
         if ($hadCompactedTurnCount) { $script:CurrentSession.compactedTurnCount = $previousCompactedTurnCount }
         else { [void]$script:CurrentSession.Remove('compactedTurnCount') }
@@ -2350,15 +2564,72 @@ function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.
     }
 }
 
+function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 131072) {
+    $messages = [Collections.Generic.List[object]]::new()
+    if (-not $script:CurrentSession) {
+        if ($Instruction) {
+            $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $Instruction 65536) })
+        }
+        return $messages
+    }
+
+    if ($script:CurrentSession.summary) {
+        $summaryLabel = if ((Get-AILanguage) -eq 'en-US') {
+            "Previous session facts summary:`n$($script:CurrentSession.summary)"
+        } else {
+            "较早对话摘要：`n$($script:CurrentSession.summary)"
+        }
+        $ackText = if ((Get-AILanguage) -eq 'en-US') { "Understood. I will follow the earlier context." } else { "已了解上述历史会话事实。" }
+        $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $summaryLabel 16384) })
+        $messages.Add([ordered]@{ role = 'assistant'; content = $ackText })
+    }
+
+    $start = if (Test-AIMapContains $script:CurrentSession 'compactedTurnCount') { [int]$script:CurrentSession.compactedTurnCount } else { 0 }
+    $turns = @($script:CurrentSession.turns)
+    for ($index = $start; $index -lt $turns.Count; $index++) {
+        $turn = $turns[$index]
+        $rawRole = [string]$turn.role
+        $role = if ($rawRole -eq 'assistant') { 'assistant' } else { 'user' }
+        $content = Format-AICompactTurnContent ([string]$turn.content)
+        $prefix = if ($rawRole -eq 'tool') {
+            if ((Get-AILanguage) -eq 'en-US') { "[Tool Result] " } else { "[工具结果] " }
+        } else { '' }
+        $safeContent = Protect-AIText "$prefix$content" -1
+        $messages.Add([ordered]@{ role = $role; content = $safeContent })
+    }
+
+    if ($Instruction) {
+        $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $Instruction 65536) })
+    }
+
+    $totalChars = 0
+    foreach ($m in $messages) { $totalChars += [string]$m.content.Length }
+    while ($totalChars -gt $MaximumCharacters -and $messages.Count -gt 2) {
+        $removed = $messages[0]
+        $messages.RemoveAt(0)
+        $totalChars -= [string]$removed.content.Length
+    }
+
+    $messages
+}
+
 function Invoke-AISessionModel([Collections.IDictionary]$Model, [string]$Instruction, [switch]$EnableTools,
     [switch]$NoRender, [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None) {
     Compress-AISessionIfNeeded $Model $CancellationToken
-    $context = Get-AISessionContextText
-    $prompt = if ($context) { "以下是持久会话上下文：`n$context`n`n当前要求：$Instruction" } else { $Instruction }
-    $result = Invoke-AIModelText -Model $Model -Prompt $prompt -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
-    $result
+    try {
+        $messages = Get-AISessionMessages -Instruction $Instruction
+        $result = Invoke-AIModelText -Model $Model -Messages $messages -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
+        return $result
+    } catch {
+        $context = Get-AISessionContextText
+        $prompt = if ($context) { "以下是持久会话上下文：`n$context`n`n当前要求：$Instruction" } else { $Instruction }
+        $result = Invoke-AIModelText -Model $Model -Prompt $prompt -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
+        return $result
+    }
 }
+#endregion
 
+#region 11. Agent 任务调度、审批机制与顶层执行 Harness
 function Get-AIRunPath([string]$Id) {
     if ($Id -notmatch '^[a-fA-F0-9]{32}$') { throw 'Run ID 无效。' }
     Join-Path $script:RunDirectory "$Id.json"
@@ -2975,24 +3246,55 @@ function ConvertTo-AIAutoShellLine([string]$Text) {
     $suffix = [guid]::NewGuid().ToString('N')
     $success = "__PSAI_${suffix}_Success"
     $errorRecord = "__PSAI_${suffix}_Error"
+    $initialErrorCount = "__PSAI_${suffix}_InitialErrorCount"
+    $previousNativePref = "__PSAI_${suffix}_PrevNativePref"
+    $previousExitCode = "__PSAI_${suffix}_PrevExitCode"
     $fallback = New-AITopLevelHarnessScript "Start-PSAIAutoFallback -Command '$escaped' -ErrorRecord `$$errorRecord"
     @"
 `$$success = `$false
 `$$errorRecord = `$null
+`$$initialErrorCount = `$Error.Count
+`$$previousNativePref = `$null
+`$$previousExitCode = `$null
+if (`$PSVersionTable.PSVersion -ge [version]'7.3') {
+    `$$previousNativePref = [bool]`$PSNativeCommandUseErrorActionPreference
+    `$PSNativeCommandUseErrorActionPreference = `$true
+} else {
+    if (`$null -ne (Get-Variable LASTEXITCODE -ErrorAction SilentlyContinue)) {
+        `$$previousExitCode = [int]`$LASTEXITCODE
+    }
+    `$LASTEXITCODE = 0
+}
 try {
 $Text
-`$$success = `$?
-if (-not `$$success) { `$$errorRecord = `$Error[0] }
+`$$success = [bool]`$?
+if (-not `$$success) {
+    if (`$Error.Count -gt `$$initialErrorCount) {
+        `$$errorRecord = `$Error[0]
+    } elseif (`$null -ne (Get-Variable LASTEXITCODE -ErrorAction SilentlyContinue) -and [int]`$LASTEXITCODE -ne 0) {
+        `$$errorRecord = "原生命令退出码：`$LASTEXITCODE"
+    } else {
+        `$$errorRecord = '命令执行未返回成功状态。'
+    }
+}
 } catch {
 `$$errorRecord = `$_
 `$$success = `$false
 Write-Error -ErrorRecord `$_ -ErrorAction Continue
+} finally {
+if (`$PSVersionTable.PSVersion -ge [version]'7.3') {
+    `$PSNativeCommandUseErrorActionPreference = [bool]`$$previousNativePref
+} elseif (`$null -ne `$$previousExitCode) {
+    `$LASTEXITCODE = [int]`$$previousExitCode
+} else {
+    Remove-Variable LASTEXITCODE -Scope 0 -ErrorAction SilentlyContinue
+}
 }
 Invoke-PSAIAutoCompletion -Command '$escaped' -Succeeded:([bool]`$$success) -ErrorRecord `$$errorRecord
 if (-not `$$success) {
 $fallback
 }
-Remove-Variable -Name '$success','$errorRecord' -Scope 0 -ErrorAction SilentlyContinue
+Remove-Variable -Name '$success','$errorRecord','$initialErrorCount','$previousNativePref','$previousExitCode' -Scope 0 -ErrorAction SilentlyContinue
 "@
 }
 
@@ -3047,7 +3349,9 @@ function Start-PSAIAutoFallback {
     $task = "刚才的本地 PowerShell 命令执行失败。请根据原命令和真实错误提出修复或诊断命令。`n原命令：$safeCommand`n错误：$safeError"
     Start-PSAIRun -Task $task -CancellationToken ([Threading.CancellationToken]::None)
 }
+#endregion
 
+#region 12. PSReadLine 按键拦截与智能输入路由
 function Set-AICurrentBuffer([string]$Text) {
     $current = $null; $cursor = 0
     [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$current, [ref]$cursor)
@@ -3324,7 +3628,9 @@ function Get-AIShortcutStatus {
         }
     }
 }
+#endregion
 
+#region 13. Profile 自动加载注入与卸载清理
 function Test-AIProfileIntegration {
     try {
         if (-not (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) { return $false }
@@ -3534,7 +3840,9 @@ function Uninstall-PSAIProfileIntegration {
         [PSAITerminal.AITerminalAtomicFile]::WriteAllText($path, $updated)
     }
 }
+#endregion
 
+#region 14. 模块导出与清理钩子
 Initialize-AIState
 Initialize-AISessionState
 
@@ -3585,3 +3893,5 @@ Export-ModuleMember -Function @(
     'Invoke-PSAI','Invoke-PSAIAutoCompletion','Show-PSAIResultExplanation','Enable-PSAIPredictor','Disable-PSAIPredictor',
     'Get-PSAIIntegrationStatus','Test-PSAIConfiguration','Install-PSAIProfileIntegration','Uninstall-PSAIProfileIntegration'
 ) -Alias @('Configure-PSAI')
+#endregion
+

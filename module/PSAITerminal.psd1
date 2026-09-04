@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'PSAITerminal.psm1'
-    ModuleVersion = '0.6.0'
+    ModuleVersion = '1.0.0'
     GUID = 'ac841eb9-b63e-4dd0-9974-c6e7ca4a1682'
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
@@ -32,7 +32,7 @@
             Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '0.6.0：支持 Windows PowerShell 5.1 x64/x86 与 PowerShell 7.4+，共享配置与数据；移除 Linux/macOS 实现。'
+            ReleaseNotes = '1.0.0：首个正式版。支持 Windows PowerShell 5.1 x64/x86 与 PowerShell 7.4+；实现原生结构化多轮 Messages 架构、Win32 DACL 本地权限安全保护、运行时环境动态切片注入与长输出紧凑化。'
         }
     }
 }

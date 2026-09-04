@@ -11,7 +11,7 @@ param(
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 0.6.0 仅支持 Windows。' }
+if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 1.0.0 仅支持 Windows。' }
 if ($NoProfileIntegration -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
     throw '-NoProfileIntegration 与 -ProfilePath 不能同时使用。'
 }

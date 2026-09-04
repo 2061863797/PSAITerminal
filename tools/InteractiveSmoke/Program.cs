@@ -29,7 +29,7 @@ Directory.CreateDirectory(stateRoot);
 string alternateManifestPath = manifestPath;
 if (!useProfile)
 {
-    string alternateModuleDirectory = Path.Combine(stateRoot, "Modules", "PSAITerminal", "0.6.0");
+    string alternateModuleDirectory = Path.Combine(stateRoot, "Modules", "PSAITerminal", "1.0.0");
     CopyDirectory(Path.GetDirectoryName(manifestPath)!, alternateModuleDirectory);
     alternateManifestPath = Path.Combine(alternateModuleDirectory, Path.GetFileName(manifestPath));
 }
