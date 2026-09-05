@@ -6,12 +6,14 @@ param(
     [string]$TargetHost = 'Current',
     [string]$ModuleRoot,
     [string]$ProfilePath,
-    [switch]$NoProfileIntegration
+    [switch]$NoProfileIntegration,
+    [switch]$PurgeUserData,
+    [switch]$Force
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 1.0.0 仅支持 Windows。' }
+if ($env:OS -ne 'Windows_NT') { throw 'PSAITerminal 仅支持 Windows。' }
 if ($NoProfileIntegration -and -not [string]::IsNullOrWhiteSpace($ProfilePath)) {
     throw '-NoProfileIntegration 与 -ProfilePath 不能同时使用。'
 }
@@ -25,7 +27,7 @@ $script:DocumentsRoot = if ($env:PSAI_TEST_DOCUMENTS_HOME) { [IO.Path]::GetFullP
     else { [Environment]::GetFolderPath([Environment+SpecialFolder]::MyDocuments) }
 if ($TargetHost -eq 'Both') {
     $results = foreach ($hostTarget in @('WindowsPowerShell','PowerShell')) {
-        $arguments = @{ TargetHost=$hostTarget; NoProfileIntegration=$NoProfileIntegration; Confirm=$false }
+        $arguments = @{ TargetHost=$hostTarget; NoProfileIntegration=$NoProfileIntegration; PurgeUserData=$PurgeUserData; Force=$Force; Confirm=$false }
         if ($WhatIfPreference) { $arguments.WhatIf = $true }
         & $PSCommandPath @arguments
     }
@@ -196,10 +198,21 @@ if ($PSCmdlet.ShouldProcess($moduleBase, '卸载 PSAITerminal 模块')) {
         }
     }
     if (Test-Path -LiteralPath $moduleBase -PathType Container) { Remove-Item -LiteralPath $moduleBase -Recurse -Force }
+    [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", $null, 'Process')
+    $userDataRemoved = $false
+    if ($PurgeUserData) {
+        $configHome = if ($env:PSAI_CONFIG_HOME) { $env:PSAI_CONFIG_HOME } else { Join-Path $script:DocumentsRoot 'PowerShell\PSAITerminal' }
+        $localAppData = if ($env:PSAI_DATA_HOME) { $env:PSAI_DATA_HOME }
+            elseif ($env:PSAI_TEST_LOCALAPPDATA) { $env:PSAI_TEST_LOCALAPPDATA }
+            else { Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'PowerShell\PSAITerminal' }
+
+        if (Test-Path -LiteralPath $configHome) { Remove-Item -LiteralPath $configHome -Recurse -Force; $userDataRemoved = $true }
+        if (Test-Path -LiteralPath $localAppData) { Remove-Item -LiteralPath $localAppData -Recurse -Force; $userDataRemoved = $true }
+    }
     [pscustomobject]@{
         RemovedPath = $moduleBase
         ProfilePath = $resolvedProfilePath
         ProfileIntegrationRemoved = $profileIntegrationRemoved
-        UserDataPreserved = $true
+        UserDataPreserved = (-not $userDataRemoved)
     }
 }

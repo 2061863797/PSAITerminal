@@ -29,7 +29,21 @@ Directory.CreateDirectory(stateRoot);
 string alternateManifestPath = manifestPath;
 if (!useProfile)
 {
-    string alternateModuleDirectory = Path.Combine(stateRoot, "Modules", "PSAITerminal", "1.0.0");
+    string moduleVersion = "1.0.3";
+    foreach (string line in File.ReadLines(manifestPath))
+    {
+        string trimmed = line.Trim();
+        if (trimmed.StartsWith("ModuleVersion", StringComparison.OrdinalIgnoreCase))
+        {
+            string[] parts = trimmed.Split('=', 2);
+            if (parts.Length == 2)
+            {
+                moduleVersion = parts[1].Trim().Trim('\'', '"', ';', ' ');
+                break;
+            }
+        }
+    }
+    string alternateModuleDirectory = Path.Combine(stateRoot, "Modules", "PSAITerminal", moduleVersion);
     CopyDirectory(Path.GetDirectoryName(manifestPath)!, alternateModuleDirectory);
     alternateManifestPath = Path.Combine(alternateModuleDirectory, Path.GetFileName(manifestPath));
 }
