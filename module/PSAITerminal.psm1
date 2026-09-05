@@ -2338,6 +2338,8 @@ function Show-AICliHelp {
         Write-Host '  Get-PSAISession            List persistent sessions'
         Write-Host '  Clear-PSAISession          Clear active session context'
         Write-Host '  New-PSAISession            Create a new session'
+        Write-Host ''
+        Write-Host '  Shortcuts: F2 (Force AI) | F3 (Force Shell) | F6 (Cycle Mode) | F7 (Explain Last)'
     } else {
         Write-Host '  ai                         打开交互配置菜单'
         Write-Host '  ai <内容>                  显式询问 AI 或提出本地任务'
@@ -2350,6 +2352,8 @@ function Show-AICliHelp {
         Write-Host '  Get-PSAISession            查看持久会话列表'
         Write-Host '  Clear-PSAISession          清空当前激活会话'
         Write-Host '  New-PSAISession            新建会话'
+        Write-Host ''
+        Write-Host '  快捷键提示: F2 (强制 AI) | F3 (强制 Shell) | F6 (切换模式) | F7 (解释最近命令)'
     }
     Write-Host ''
 }
