@@ -934,12 +934,13 @@ function Initialize-AISessionState {
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:SessionDirectory)
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:RunDirectory)
 
-    $procVar = Get-Variable -Name '__PSAI_ACTIVE_PROCESS_SESSION_ID' -Scope Global -ErrorAction SilentlyContinue
-    $isSameProcess = ($null -ne $procVar -and -not [string]::IsNullOrWhiteSpace([string]$procVar.Value))
+    $envVarName = "__PSAI_SESSION_PID_$PID"
+    $procSessionId = [Environment]::GetEnvironmentVariable($envVarName, 'Process')
+    $isSameProcess = (-not [string]::IsNullOrWhiteSpace($procSessionId))
 
     $session = $null
     if ($isSameProcess) {
-        $session = Import-AISession ([string]$procVar.Value)
+        $session = Import-AISession $procSessionId
     }
 
     # 打开新终端时自动开启全新会话，清除上下文包袱，避免跨进程/跨历史会话污染
@@ -952,7 +953,7 @@ function Initialize-AISessionState {
         } else { $script:Config.activeSession = [string]$session.id }
     }
 
-    $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
+    [Environment]::SetEnvironmentVariable($envVarName, [string]$session.id, 'Process')
     $script:CurrentSession = $session
     $lastTool = @($session.turns | Where-Object kind -eq 'tool_result' | Select-Object -Last 1)
     if ($lastTool.Count -and $lastTool[0].metadata -is [Collections.IDictionary]) {
@@ -1025,7 +1026,7 @@ function New-PSAISession {
     if (-not $NoSelect -or -not $script:CurrentSession) {
         Invoke-AIConfigMutation { $script:Config.activeSession = [string]$session.id }
         $script:CurrentSession = $session
-        $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
+        [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", [string]$session.id, 'Process')
     }
     [pscustomobject]$session
 }
@@ -1051,7 +1052,7 @@ function Select-PSAISession {
     if (-not $session) { throw "会话不存在：$Id" }
     Invoke-AIConfigMutation { $script:Config.activeSession = $Id }
     $script:CurrentSession = $session
-    $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
+    [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", [string]$session.id, 'Process')
     Get-PSAISession -Id $Id
 }
 
@@ -3482,7 +3483,6 @@ function Start-PSAIAutoFallback {
         [Parameter(Mandatory)][string]$Command,
         [AllowNull()]$ErrorRecord
     )
-    $model = Get-AIActiveModel
     $safeCommand = Protect-AIText $Command 4096
     $safeError = Protect-AIText ($ErrorRecord | Out-String) 8192
 
