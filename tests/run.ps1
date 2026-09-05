@@ -114,6 +114,14 @@ function Start-AIMockServer([string[]]$Responses) {
 
 function Stop-AIMockServer($Server) {
     if (-not $Server) { return }
+    if ($Server.Port) {
+        try {
+            $closer = [Net.Sockets.TcpClient]::new()
+            $async = $closer.BeginConnect([Net.IPAddress]::Loopback, [int]$Server.Port, $null, $null)
+            [void]$async.AsyncWaitHandle.WaitOne(50)
+            $closer.Dispose()
+        } catch {}
+    }
     Stop-Job $Server.Job -ErrorAction SilentlyContinue
     Remove-Job $Server.Job -Force -ErrorAction SilentlyContinue
 }

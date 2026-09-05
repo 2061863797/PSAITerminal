@@ -226,6 +226,44 @@ public static class AITerminalInputRouter
 
         return false;
     }
+
+    public static bool IsConversationalInput(string? line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            return false;
+        }
+
+        string trimmed = line!.Trim();
+
+        // 1. 常见问候语（你好、hi、hello、早上好、在吗等）
+        if (Regex.IsMatch(trimmed, @"^(?i:你好|您好|hello|hi|hey|good\s*(morning|afternoon|evening)|早上好|下午好|晚上好|在吗|在不在|哈喽)[\s!！?？~～]*$"))
+        {
+            return true;
+        }
+
+        // 2. 如果包含明确的操作型动词或具体终端目标指令词，直接判定为指令任务（非自由闲聊）
+        if (Regex.IsMatch(trimmed, @"(?i:查|查看|获取|查询|查找|列出|显示|杀死|杀掉|结束|重启|启动|停止|运行|执行|安装|卸载|配置|创建|新建|删除|清理|打包|编译|构建|发布|备份|压缩|解压|测试|诊断|解决|修复|定位|ping|curl|git|docker|npm|ipconfig|ifconfig|netstat|ps)\b|^(?i:find|list|show|kill|restart|start|stop|run|exec|install|uninstall|build|publish|clean|test)\b"))
+        {
+            return false;
+        }
+
+        // 3. 概念性问句与解释性咨询（什么是、为什么、怎么理解、区别是什么等）
+        if (Regex.IsMatch(trimmed, @"^(?i:什么是|为何|为什么|怎么理解|如何理解|解释一下|解释下|介绍一下|介绍下|请问|帮我解释|有何区别|区别是什么|what\s+is|why|how\s+to\s+understand|explain|tell\s+me\s+about)\b"))
+        {
+            return true;
+        }
+
+        // 4. 以疑问助词结尾的非命令纯问句
+        if (trimmed.EndsWith("?", StringComparison.Ordinal) || trimmed.EndsWith("？", StringComparison.Ordinal) ||
+            trimmed.EndsWith("吗", StringComparison.Ordinal) || trimmed.EndsWith("么", StringComparison.Ordinal) ||
+            trimmed.EndsWith("呢", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
 }
 
 public static class AITerminalEndpointResolver

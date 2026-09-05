@@ -185,7 +185,7 @@ function Get-AIText([string]$Key, [object[]]$FormatArguments = @()) {
             'en-US'='This is a high-risk command. Execute exactly the command shown above?'
             'zh-CN'='这是高风险命令。确定执行上面显示的完整命令吗？'
         }
-        'ApprovalMenu' = @{'en-US'=@('Execute','Edit','Reject','Terminate');'zh-CN'=@('执行','编辑','拒绝','终止')}
+        'ApprovalMenu' = @{'en-US'=@('Approve & Execute','Edit Command','Reject');'zh-CN'=@('批准执行','编辑命令','拒绝执行')}
         'Protocol' = @{'en-US'='Protocol';'zh-CN'='协议'}
         'Model' = @{'en-US'='Model';'zh-CN'='模型'}
         'EndpointLabel' = @{'en-US'='Endpoint';'zh-CN'='地址'}
@@ -2553,6 +2553,8 @@ function Test-AITurnMeaningfulForContext($Turn) {
     if ($content -match '^(?i:继续完成 Run [a-f0-9]{32} 的本地任务)') { return $false }
     if ($content -match '^(?i:Complete the user''s (task|request))') { return $false }
     if ($content -match '^(?i:完成用户的(本地)?(任务|请求))') { return $false }
+    if ($content -match '(?i:Get-ChildItem\s+.*Run[a-f0-9]*)') { return $false }
+    if ($content -match '(?i:搜索.*Run|查找.*Run)') { return $false }
     return $true
 }
 
@@ -2567,6 +2569,7 @@ function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
         if (-not (Test-AITurnMeaningfulForContext $turn)) { continue }
         $label = switch ([string]$turn.role) { 'user' {'用户'} 'assistant' {'AI'} 'tool' {'工具结果'} default {[string]$turn.role} }
         $content = Format-AICompactTurnContent ([string]$turn.content)
+        $content = [regex]::Replace($content, '(?i)\b[a-f0-9]{32}\b', '[ID]')
         $parts.Add("[$label/$($turn.kind)] $content")
     }
     $value = Protect-AIText ($parts -join "`n`n") -1
@@ -2655,6 +2658,7 @@ function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 1
         $rawRole = [string]$turn.role
         $role = if ($rawRole -eq 'assistant') { 'assistant' } else { 'user' }
         $content = Format-AICompactTurnContent ([string]$turn.content)
+        $content = [regex]::Replace($content, '(?i)\b[a-f0-9]{32}\b', '[ID]')
         $prefix = if ($rawRole -eq 'tool') {
             if ((Get-AILanguage) -eq 'en-US') { "[Tool Result] " } else { "[工具结果] " }
         } else { '' }
@@ -2902,9 +2906,9 @@ function Show-AIToolApproval([Collections.IDictionary]$Run, [Collections.IDictio
         Write-AIColoredHost "$(Get-AIText 'ApprovalRisk'): $risk" $riskColor
         Write-Warning (Get-AIText 'ApprovalNotice')
         $approvalMenu = Get-AIText 'ApprovalMenu'
-        Write-Host ''; Write-Host "1. $($approvalMenu[0])"; Write-Host "2. $($approvalMenu[1])"; Write-Host "3. $($approvalMenu[2])"; Write-Host "4. $($approvalMenu[3])"
+        Write-Host ''; Write-Host "1. $($approvalMenu[0])"; Write-Host "2. $($approvalMenu[1])"; Write-Host "3. $($approvalMenu[2])"
         $defaultChoice = if ([string]$risk -eq 'High') { $null } else { [Nullable[int]]1 }
-        $choice = Read-AIChoice (Get-AIText 'SelectNumber') @(1,2,3,4) $defaultChoice
+        $choice = Read-AIChoice (Get-AIText 'SelectNumber') @(1,2,3) $defaultChoice
         if ($choice -eq 1) {
             $currentRisk = Get-AICommandRisk ([string]$Proposal.command)
             if ([string]$currentRisk -ne [string]$risk) {
@@ -2948,7 +2952,7 @@ function Show-AIToolApproval([Collections.IDictionary]$Run, [Collections.IDictio
             continue
         }
         $Run.pendingProposal = $null
-        Set-AIRunState $Run $(if($choice -eq 3){'Cancelled'}else{'Cancelled'}) @{reason=if($choice -eq 3){'Rejected'}else{'Stopped'}}
+        Set-AIRunState $Run 'Cancelled' @{reason='Rejected'}
         return $null
     }
 }
@@ -2967,14 +2971,38 @@ function Invoke-AIHarnessModelStep([Collections.IDictionary]$Run, [Threading.Can
     Set-AIRunState $Run 'CallingModel' @{model=$model.name}
     $lang = Get-AILanguage
     $instruction = if ($lang -eq 'en-US') {
-        "Complete the user's request. If the input is natural language (greetings, questions, conceptual inquiries), reply directly with a clear and natural explanation without calling tools. If the input contains code with errors, diagnose the error and provide the corrected command in a ```powershell ... ``` block with practical advice. Only call the powershell tool when a local terminal action is genuinely required, and keep the command minimal and native. When results are sufficient, provide a concise summary without calling tools."
+        @"
+You are an intelligent terminal assistant. Complete the user's request strictly adhering to these rules:
+1. Two Input Types:
+   - Free Communication (greetings, inquiries, conceptual questions): Reply directly in clear natural text without calling tools. Never call tools for purely informational requests.
+   - Command Execution (tasks, system queries, file/process management): Call the powershell tool. You MUST provide all six elements in the arguments: purpose, command, expectedOutcome, sideEffects, rollbackHint, and risk (Low/Medium/High). Keep commands minimal and native.
+2. Error Diagnosis & Self-Healing:
+   - When diagnosing syntax errors or a failed command, FIRST explain in text why it failed (root cause), then propose the corrected command with full six elements.
+   - If a previous command failed and caused adverse side effects (e.g. dirty files created, state altered), you MUST FIRST propose a rollback or cleanup command before proceeding with the corrected command.
+3. Goal-Driven Multi-Step Planning & Obstacles:
+   - If achieving the goal requires multiple steps, plan the minimal sequence and execute step by step. Each step must provide full six elements.
+   - If the requested goal is infeasible in the current environment (e.g. lack of permissions, unsupported platform, logical contradiction), DO NOT guess commands; directly explain in text why it is infeasible. If there are solvable obstacles (e.g. missing dependency), state the obstacle and propose the prerequisite step.
+4. Single-Step Completion:
+   - When a single-step operation (e.g. check IP, list directory, check status) has succeeded and satisfied the user's request, DO NOT call any more tools. Summarize briefly or stop.
+"@
     } else {
-        "完成用户的请求。如果是自然语言（如问候、概念咨询、纯文本疑问），严禁调用工具，直接给出清晰自然的中文回复；如果是输入的代码有错误或格式问题，直接指出错误根因，给出【修改后的正确指令】和简要建议；仅在确实需要操作本机终端时调用 powershell 工具，且必须保持命令极简原生，严禁过度复杂化包装。已有结果足够时直接给出简洁总结，不要调用工具。"
+        @"
+你是一个智能终端助手。严格遵守以下规范完成用户请求：
+1. 自然语言二分类：
+   - 自由沟通（问候、概念咨询、原理探讨、纯文本疑问）：严禁调用 powershell 工具，直接返回清晰自然的自然语言回复。
+   - 操作指令（查询系统信息、查IP、文件操作、进程管理、部署等）：必须调用 powershell 工具。每一步工具调用参数中必须完整提供六要素：purpose（目的）、command（命令）、expectedOutcome（预期）、sideEffects（副作用）、rollbackHint（回滚建议）。命令必须保持极简、原生、安全。
+2. 错误诊断与自愈优先：
+   - 若用户输入的代码有语法错误或上一步执行失败：必须先用文字清晰解释【为什么执行不成功】（错误根因与诊断），再提出修正命令并提供完整六要素。
+   - 若上一步命令执行失败并造成了影响或副作用（如产生临时脏文件、改变了局部配置），必须【首先申请执行回滚或清理修复的命令】，恢复干净状态后再继续正确命令。
+3. 目标驱动多步规划与障碍分析：
+   - 用户提出长任务或需要多步达成的目标时，自主规划最简步骤序列分步推进，每一步都必须提供完整六要素。
+   - 若用户目标在当前环境下不可行（如权限不足、系统不支持、逻辑冲突），严禁盲目猜命令试错，必须直接用中文明确说明【为什么不可行】；若存在可解决的障碍（如缺少某依赖），主动指出障碍并优先规划解决障碍的前置步骤。
+4. 单步完结准则：
+   - 单步查询或单一操作（如查IP、列出目录、查看状态）成功执行后，已达成用户意图，严禁再次调用工具，直接总结或结束。
+"@
     }
     if ($RepairMessage) {
-        $repairPrefix = if ($lang -eq 'en-US') { "`nPrevious tool call was invalid: $RepairMessage. Please fix it once and keep the command minimal." }
-        else { "`n上一次工具调用无效：$RepairMessage。请只修正一次，并保持命令简洁原生。" }
-        $instruction += $repairPrefix
+        $instruction += "`n$RepairMessage"
     }
     Set-AIRunState $Run 'Streaming' @{model=$model.name}
     $response = Invoke-AISessionModel $model $instruction -EnableTools -CancellationToken $CancellationToken
@@ -3087,7 +3115,40 @@ function Complete-PSAIToolExecution {
     Set-AIRunState $run 'Observing' @{stepId=$StepId;succeeded=$Succeeded;output=$safeOutput}
     $mark = if ($Succeeded) { '✓' } else { '✗' }
     Write-AIColoredHost "◆ $mark 命令已完成 · F7 解释" DarkGray
-    try { Invoke-AIHarnessModelStep $run $CancellationToken $null }
+
+    # 判断是否为多步骤长任务
+    $isMultiStepTask = $false
+    $taskText = [string]$run.task
+    if ($taskText -match '(?i:步骤|第[一二三四五六七八九1-9]步|先.+再|然后|接着|多步|规划|依次|接着做|完成以下.*步骤)') {
+        $isMultiStepTask = $true
+    }
+    if ($proposal -and [string]$proposal.purpose -match '(?i:步骤\s*\d|step\s*\d)') {
+        $isMultiStepTask = $true
+    }
+
+    # 1. 单步任务执行成功：直接标记完成，结束流程，绝不再次调度模型去发散搜索文件
+    if ($Succeeded -and -not $isMultiStepTask) {
+        Set-AIRunState $run 'Completed'
+        return $null
+    }
+
+    # 2. 失败自愈或多步骤长任务推进
+    $harnessMessage = $null
+    if (-not $Succeeded) {
+        $harnessMessage = if ((Get-AILanguage) -eq 'en-US') {
+            "The previous command failed (output/error: $safeOutput). Please FIRST explain in text why it failed (root cause). If the previous execution caused any adverse side effects (dirty files or altered state), you MUST FIRST propose a rollback or cleanup command; otherwise propose the corrected command to continue. Provide all six elements (purpose, command, expectedOutcome, sideEffects, rollbackHint, risk)."
+        } else {
+            "上一步命令执行失败（实际输出/错误：$safeOutput）。请首先用文字解释【为什么执行不成功】（分析失败根因）。若刚才的执行造成了副作用（如产生了脏文件或改动了系统状态），必须【首先申请执行回滚或清理修复的命令】；若无实质副作用，请结合报错修改为正确的命令继续执行。每一步必须完整提供六要素（目的、命令、预期、副作用、回滚建议、风险）。"
+        }
+    } else {
+        $harnessMessage = if ((Get-AILanguage) -eq 'en-US') {
+            "The previous step succeeded (output: $safeOutput). Check if the overall goal is accomplished: if finished, DO NOT call tools and briefly summarize; if unfinished, proceed with the next planned step and provide all six elements."
+        } else {
+            "上一步命令已成功执行（输出：$safeOutput）。请检查总目标是否已达成：若已达成，严禁再次调用工具，请直接给出简洁总结；若未达成，请推进下一个规划步骤并完整提供六要素（目的、命令、预期、副作用、回滚建议、风险）。"
+        }
+    }
+
+    try { Invoke-AIHarnessModelStep $run $CancellationToken $harnessMessage }
     catch {
         if ($CancellationToken.IsCancellationRequested) { Set-AIRunState $run 'Cancelled' @{reason='Cancelled'} }
         elseif ($run.state -notin @('Failed','Cancelled')) { Set-AIRunState $run 'Failed' @{message=(Protect-AIText $_.Exception.Message 2048)} }
@@ -3422,48 +3483,13 @@ function Start-PSAIAutoFallback {
     $safeError = Protect-AIText ($ErrorRecord | Out-String) 8192
 
     $isEn = (Get-AILanguage) -eq 'en-US'
-    $prompt = if ($isEn) {
-        "The following PowerShell command failed in the local terminal:`nCommand: $safeCommand`nError: $safeError`n`nPlease provide a smart diagnosis:`n1. [Error Cause]: 1-2 sentence concise explanation of why it failed.`n2. [Corrected Command]: Corrected, minimal native PowerShell command in a ```powershell ... ``` block.`n3. [Suggestion]: Practical tips to avoid this error.`nReply directly in clear text without calling tools. Keep commands minimal and native."
+    $task = if ($isEn) {
+        "The following PowerShell command failed in the local terminal:`nCommand: $safeCommand`nError: $safeError`n`nPlease first explain in text why it failed (root cause diagnosis). If it caused adverse side effects, first propose a rollback or cleanup command; otherwise call the powershell tool with the corrected minimal native command, providing all six elements (purpose, command, expectedOutcome, sideEffects, rollbackHint, risk)."
     } else {
-        "刚才在本地 PowerShell 终端中执行的命令失败了：`n失败命令：$safeCommand`n实际错误：$safeError`n`n请直接给出智能诊断与修复方案：`n1. 【错误原因】：1~2 句话直接指出失败根因。`n2. 【修改后的指令】：在 ```powershell ... ``` 代码块中给出修改后最简明、可直接执行的原生 PowerShell 命令。`n3. 【使用建议】：简要说明注意事项或优化建议。`n请直接给出清晰自然的中文解答，严禁调用工具，保持命令极简原生。"
+        "刚才在本地 PowerShell 终端中执行的命令失败了：`n失败命令：$safeCommand`n实际错误：$safeError`n`n请首先用文字清晰解释【为什么执行不成功】（错误根因诊断）。若刚才的执行造成了副作用（如产生脏文件或改变状态），必须优先申请执行回滚或清理修复的命令；否则调用 powershell 工具给出修改后的正确指令，并完整提供目的、命令、预期、副作用、回滚建议与风险等级。"
     }
 
-    try {
-        Write-Host ''
-        $header = if ($isEn) { '🤖 AI Auto-Diagnostics & Correction:' } else { '🤖 AI 智能诊断与修改建议：' }
-        Write-AIColoredHost $header Cyan
-
-        Add-AISessionTurn 'user' $prompt 'auto_fallback_request' | Out-Null
-        $result = Invoke-AISessionModel -Model $model -Instruction $prompt
-        if ($result.Text) {
-            Add-AISessionTurn 'assistant' $result.Text 'auto_fallback_response' @{command=$safeCommand} `
-                -InputTokens ([long]$result.InputTokens) -OutputTokens ([long]$result.OutputTokens) | Out-Null
-
-            if ($result.Text -match '(?ms)```(?:powershell|pwsh|posh)?\s*\r?\n(.*?)\r?\n```') {
-                $candidate = $Matches[1].Trim()
-                $candidateLines = @($candidate -split "\r?\n" | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') })
-                if ($candidateLines.Count -eq 1) {
-                    $fixedCmd = $candidateLines[0].Trim()
-                    if ($fixedCmd -and [Environment]::UserInteractive -and -not [string]::IsNullOrWhiteSpace($fixedCmd)) {
-                        Write-Host ''
-                        $runPrompt = if ($isEn) { "Execute corrected command now? [y/N]" } else { "是否立即执行修改后的指令？[y/N]" }
-                        if (Read-AIYesNo "$runPrompt ($fixedCmd)" $false) {
-                            Write-Host ''
-                            Write-AIColoredHost "> $fixedCmd" Green
-                            Invoke-Expression $fixedCmd
-                        }
-                    }
-                }
-            }
-        }
-    } catch {
-        $warnMsg = if ($isEn) {
-            "AI diagnostics unavailable: $($_.Exception.Message)"
-        } else {
-            "AI 诊断服务暂不可用：$($_.Exception.Message)"
-        }
-        Write-AIColoredHost "💡 $warnMsg" Yellow
-    }
+    Start-PSAIRun -Task $task
 }
 #endregion
 
@@ -3519,11 +3545,20 @@ function ConvertTo-AISubmittedLine([string]$Line) {
         return New-AIPendingInvocationLine (New-AITopLevelHarnessScript "Resolve-PSAIRun -Id '$($Matches[1])' -Outcome '$($Matches[2])'")
     }
     if ($trimmed -match '^(?i:ai)\s+(.+)$') {
+        $raw = $Matches[1].Trim()
         Set-AILastSubmittedCommand $Line
-        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Matches[1] -Agent)
+        $isChat = [PSAITerminal.AITerminalInputRouter]::IsConversationalInput($raw)
+        if ($isChat) {
+            return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $raw)
+        }
+        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $raw -Agent)
     }
     if ($action -eq 'ForceAI') {
         Set-AILastSubmittedCommand $Line
+        $isChat = [PSAITerminal.AITerminalInputRouter]::IsConversationalInput($Line)
+        if ($isChat) {
+            return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line)
+        }
         return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent)
     }
     if ($trimmed -match '^(?i:Show-PSAIResultExplanation)(?:\s|$)' -or $script:Config.mode -eq 'Off') {
@@ -3532,19 +3567,25 @@ function ConvertTo-AISubmittedLine([string]$Line) {
 
     Set-AILastSubmittedCommand $Line
     if ($script:Config.mode -eq 'AI' -or ($script:Config.mode -eq 'Auto' -and (Test-AIAutoRoute $Line))) {
-        $task = $Line
         $tokens = $null; $parseErrors = $null
         [void][Management.Automation.Language.Parser]::ParseInput($Line, [ref]$tokens, [ref]$parseErrors)
         $hasSyntaxError = (@($parseErrors).Count -gt 0)
         $isCodeLike = $hasSyntaxError -and ($Line -match '[-$|{}\\/]|^\s*(?:Get|Set|New|Remove|Start|Stop|git|docker|npm|kubectl)\b')
         if ($isCodeLike) {
+            $errorDetails = (@($parseErrors | ForEach-Object { $_.Message }) -join '; ')
             $task = if ((Get-AILanguage) -eq 'en-US') {
-                "The user entered the following PowerShell command with syntax or formatting errors:`n$Line`n`nPlease analyze the error, provide the corrected command in a ```powershell ... ``` block, and give practical advice. Do not call tools."
+                "The user entered the following PowerShell command with syntax errors:`n$Line`nSyntax Parse Errors: $errorDetails`n`nPlease first explain why the code failed to execute (syntax error diagnosis), then propose the corrected native PowerShell command with all six elements (purpose, command, expectedOutcome, sideEffects, rollbackHint, risk)."
             } else {
-                "用户在终端中输入了以下存在语法或格式错误的 PowerShell 代码：`n$Line`n`n请分析错误原因，在 ```powershell ... ``` 代码块中给出修改后的正确指令，并给出简要使用建议。直接解答，严禁调用工具。"
+                "用户在终端中输入了以下存在语法错误的 PowerShell 代码：`n$Line`n语法解析错误：$errorDetails`n`n请首先用文字清晰解释【为什么执行不成功】（语法错误根因诊断），然后调用 powershell 工具给出修改后的正确指令，并完整提供目的、命令、预期、副作用、回滚建议与风险等级。"
             }
+            return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $task -Agent)
         }
-        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $task -Agent)
+
+        $isChat = [PSAITerminal.AITerminalInputRouter]::IsConversationalInput($Line)
+        if ($isChat) {
+            return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line)
+        }
+        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent)
     }
     if ($script:Config.mode -eq 'Auto') {
         return New-AIPendingInvocationLine (ConvertTo-AIAutoShellLine $Line)

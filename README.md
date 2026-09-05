@@ -74,7 +74,7 @@ PowerShell 具备智能化交互能力。
 
 ## PowerShell Gallery
 
-当前正式版本为 [`1.0.2`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.2)。
+当前正式版本为 [`1.0.3`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.3)。
 
 两个宿主（Windows PowerShell 5.1 与 PowerShell 7.4+）均可直接运行：
 
@@ -187,7 +187,7 @@ Fn + F3
 -   Windows PowerShell 5.1 (x64/x86)
 -   PowerShell 7.4+
 
-当前 `1.0.2` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
+当前 `1.0.3` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
 
 当前发布版本：
 
