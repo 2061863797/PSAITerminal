@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'PSAITerminal.psm1'
-    ModuleVersion = '1.0.1'
+    ModuleVersion = '1.0.2'
     GUID = 'ac841eb9-b63e-4dd0-9974-c6e7ca4a1682'
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
@@ -33,7 +33,7 @@
             Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '1.0.1：新终端启动自动清除上下文（新进程独立会话隔离）；支持 ai help/clear/new/mode CLI 快捷指令；增加问候与概念直接自然解答规则；强化极简原生命令生成并净化历史调度上下文。'
+            ReleaseNotes = '1.0.2：强化自动模式智能诊断与自愈。命令执行失败自动给出错误根因分析与修改后的可执行指令，支持交互式一键执行；代码语法错误智能纠错；自然语言直接自然回复，杜绝繁琐工具包裹与运行失败中断。'
         }
     }
 }

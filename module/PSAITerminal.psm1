@@ -1729,18 +1729,20 @@ function New-AIRequestBody([Collections.IDictionary]$Model, [AllowNull()][string
 You are an assistant running in the user's local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.
 
 [Core Operating Rules]
-1. Direct Answers: For greetings (e.g. "hello"), conceptual questions, syntax explanations, or pure text inquiries, strictly do NOT call tools. Reply directly with a clear and natural explanation in English.
-2. Simplicity First: When commands are required, prefer the shortest, most direct native PowerShell command. Never overcomplicate commands with unnecessary loops, multi-tier pipelines, redundant variables, custom Format-Table styling, or extra Write-Host dividers.
-3. Respect User Input: If the user provides an existing command, only fix or adjust it if requested; do not arbitrarily rewrite it into a complex script.
+1. Direct Answers: For natural language inquiries (greetings, conceptual questions, syntax explanations, general text), strictly do NOT call tools. Reply directly with a clear and natural explanation in English.
+2. Code Correction: If the user input contains syntax/command errors or a failed command, directly diagnose the root cause, provide the corrected command in a ```powershell ... ``` block, and give practical advice.
+3. Simplicity First: When commands are required, prefer the shortest, most direct native PowerShell command. Never overcomplicate commands with unnecessary loops, multi-tier pipelines, redundant variables, custom Format-Table styling, or extra Write-Host dividers.
+4. Respect User Input: If the user provides an existing command, only fix or adjust it if requested; do not arbitrarily rewrite it into a complex script.
 "@
     } else {
         @"
 你是运行在用户本地 PowerShell 中的助手。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。
 
 [核心操作准则]
-1. 问答直接：针对问候（如 '你好'）、概念咨询、语法解释或纯文本疑问，严禁调用工具，直接给出清晰自然的中文解答；不要在桌面上搜索文件或执行任何无意义命令。
-2. 极简命令优先：当确实需要操作本机时，优先输出单行、最少、最直接的原生 PowerShell 命令。严禁无必要的复杂化包装（严禁随意添加循环、多层管道、冗余变量、自定义 Format-Table 拼接或多余的 Write-Host 分隔线）。如果一条简单原生命令即可完成，直接给出该命令。
-3. 尊重用户原意：如果用户输入本身就是一段清晰的命令，仅在需要诊断或按要求调整时处理，不要无意义地将其重写为多行复杂脚本。
+1. 问答直接：针对自然语言输入（日常问候、概念咨询、语法解释或纯文本疑问），严禁调用工具，直接给出清晰自然的中文解答；不要在桌面上搜索文件或执行任何无意义命令。
+2. 纠错与修改建议：如果用户输入的代码存在语法错误、命令拼写错误或运行异常，清晰分析核心错误原因，直接给出【修改后的正确指令】和简要优化建议，严禁将原命令过度复杂化。
+3. 极简命令优先：当确实需要操作本机时，优先输出单行、最少、最直接的原生 PowerShell 命令。严禁无必要的复杂化包装（严禁随意添加循环、多层管道、冗余变量、自定义 Format-Table 拼接或多余的 Write-Host 分隔线）。如果一条简单原生命令即可完成，直接给出该命令。
+4. 尊重用户原意：如果用户输入本身就是一段清晰的命令，仅在需要诊断或按要求调整时处理，不要无意义地将其重写为多行复杂脚本。
 "@
     }
     $runtimeContext = Get-AIRuntimeContextText
@@ -2549,8 +2551,8 @@ function Test-AITurnMeaningfulForContext($Turn) {
     if ($kind -eq 'tool_proposal') { return $false }
     $content = [string]$Turn.content
     if ($content -match '^(?i:继续完成 Run [a-f0-9]{32} 的本地任务)') { return $false }
-    if ($content -match '^(?i:Complete the user''s task\. For greetings)') { return $false }
-    if ($content -match '^(?i:完成用户的本地任务。针对问候)') { return $false }
+    if ($content -match '^(?i:Complete the user''s (task|request))') { return $false }
+    if ($content -match '^(?i:完成用户的(本地)?(任务|请求))') { return $false }
     return $true
 }
 
@@ -2965,9 +2967,9 @@ function Invoke-AIHarnessModelStep([Collections.IDictionary]$Run, [Threading.Can
     Set-AIRunState $Run 'CallingModel' @{model=$model.name}
     $lang = Get-AILanguage
     $instruction = if ($lang -eq 'en-US') {
-        "Complete the user's task. For greetings, conceptual questions, or pure text inquiries, strictly do NOT call tools—reply directly with a clear and natural explanation in English. Only call the powershell tool when local terminal action is genuinely required, and keep the command minimal, native, and clean without unnecessary complexity. When results are sufficient, provide a concise summary without calling tools."
+        "Complete the user's request. If the input is natural language (greetings, questions, conceptual inquiries), reply directly with a clear and natural explanation without calling tools. If the input contains code with errors, diagnose the error and provide the corrected command in a ```powershell ... ``` block with practical advice. Only call the powershell tool when a local terminal action is genuinely required, and keep the command minimal and native. When results are sufficient, provide a concise summary without calling tools."
     } else {
-        "完成用户的本地任务。针对问候（如 '你好'）、概念咨询或纯文本疑问，严禁调用工具，直接给出清晰自然的中文解答；仅在确实需要操作本机终端时调用 powershell 工具，且必须保持命令极简原生，严禁过度复杂化包装。已有结果足够时直接给出简洁总结，不要调用工具。"
+        "完成用户的请求。如果是自然语言（如问候、概念咨询、纯文本疑问），严禁调用工具，直接给出清晰自然的中文回复；如果是输入的代码有错误或格式问题，直接指出错误根因，给出【修改后的正确指令】和简要建议；仅在确实需要操作本机终端时调用 powershell 工具，且必须保持命令极简原生，严禁过度复杂化包装。已有结果足够时直接给出简洁总结，不要调用工具。"
     }
     if ($RepairMessage) {
         $repairPrefix = if ($lang -eq 'en-US') { "`nPrevious tool call was invalid: $RepairMessage. Please fix it once and keep the command minimal." }
@@ -3415,10 +3417,53 @@ function Start-PSAIAutoFallback {
         [Parameter(Mandatory)][string]$Command,
         [AllowNull()]$ErrorRecord
     )
+    $model = Get-AIActiveModel
     $safeCommand = Protect-AIText $Command 4096
     $safeError = Protect-AIText ($ErrorRecord | Out-String) 8192
-    $task = "刚才的本地 PowerShell 命令执行失败。请根据原命令和真实错误提出修复或诊断命令。`n原命令：$safeCommand`n错误：$safeError"
-    Start-PSAIRun -Task $task -CancellationToken ([Threading.CancellationToken]::None)
+
+    $isEn = (Get-AILanguage) -eq 'en-US'
+    $prompt = if ($isEn) {
+        "The following PowerShell command failed in the local terminal:`nCommand: $safeCommand`nError: $safeError`n`nPlease provide a smart diagnosis:`n1. [Error Cause]: 1-2 sentence concise explanation of why it failed.`n2. [Corrected Command]: Corrected, minimal native PowerShell command in a ```powershell ... ``` block.`n3. [Suggestion]: Practical tips to avoid this error.`nReply directly in clear text without calling tools. Keep commands minimal and native."
+    } else {
+        "刚才在本地 PowerShell 终端中执行的命令失败了：`n失败命令：$safeCommand`n实际错误：$safeError`n`n请直接给出智能诊断与修复方案：`n1. 【错误原因】：1~2 句话直接指出失败根因。`n2. 【修改后的指令】：在 ```powershell ... ``` 代码块中给出修改后最简明、可直接执行的原生 PowerShell 命令。`n3. 【使用建议】：简要说明注意事项或优化建议。`n请直接给出清晰自然的中文解答，严禁调用工具，保持命令极简原生。"
+    }
+
+    try {
+        Write-Host ''
+        $header = if ($isEn) { '🤖 AI Auto-Diagnostics & Correction:' } else { '🤖 AI 智能诊断与修改建议：' }
+        Write-AIColoredHost $header Cyan
+
+        Add-AISessionTurn 'user' $prompt 'auto_fallback_request' | Out-Null
+        $result = Invoke-AISessionModel -Model $model -Instruction $prompt
+        if ($result.Text) {
+            Add-AISessionTurn 'assistant' $result.Text 'auto_fallback_response' @{command=$safeCommand} `
+                -InputTokens ([long]$result.InputTokens) -OutputTokens ([long]$result.OutputTokens) | Out-Null
+
+            if ($result.Text -match '(?ms)```(?:powershell|pwsh|posh)?\s*\r?\n(.*?)\r?\n```') {
+                $candidate = $Matches[1].Trim()
+                $candidateLines = @($candidate -split "\r?\n" | Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') })
+                if ($candidateLines.Count -eq 1) {
+                    $fixedCmd = $candidateLines[0].Trim()
+                    if ($fixedCmd -and [Environment]::UserInteractive -and -not [string]::IsNullOrWhiteSpace($fixedCmd)) {
+                        Write-Host ''
+                        $runPrompt = if ($isEn) { "Execute corrected command now? [y/N]" } else { "是否立即执行修改后的指令？[y/N]" }
+                        if (Read-AIYesNo "$runPrompt ($fixedCmd)" $false) {
+                            Write-Host ''
+                            Write-AIColoredHost "> $fixedCmd" Green
+                            Invoke-Expression $fixedCmd
+                        }
+                    }
+                }
+            }
+        }
+    } catch {
+        $warnMsg = if ($isEn) {
+            "AI diagnostics unavailable: $($_.Exception.Message)"
+        } else {
+            "AI 诊断服务暂不可用：$($_.Exception.Message)"
+        }
+        Write-AIColoredHost "💡 $warnMsg" Yellow
+    }
 }
 #endregion
 
@@ -3487,7 +3532,19 @@ function ConvertTo-AISubmittedLine([string]$Line) {
 
     Set-AILastSubmittedCommand $Line
     if ($script:Config.mode -eq 'AI' -or ($script:Config.mode -eq 'Auto' -and (Test-AIAutoRoute $Line))) {
-        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent)
+        $task = $Line
+        $tokens = $null; $parseErrors = $null
+        [void][Management.Automation.Language.Parser]::ParseInput($Line, [ref]$tokens, [ref]$parseErrors)
+        $hasSyntaxError = (@($parseErrors).Count -gt 0)
+        $isCodeLike = $hasSyntaxError -and ($Line -match '[-$|{}\\/]|^\s*(?:Get|Set|New|Remove|Start|Stop|git|docker|npm|kubectl)\b')
+        if ($isCodeLike) {
+            $task = if ((Get-AILanguage) -eq 'en-US') {
+                "The user entered the following PowerShell command with syntax or formatting errors:`n$Line`n`nPlease analyze the error, provide the corrected command in a ```powershell ... ``` block, and give practical advice. Do not call tools."
+            } else {
+                "用户在终端中输入了以下存在语法或格式错误的 PowerShell 代码：`n$Line`n`n请分析错误原因，在 ```powershell ... ``` 代码块中给出修改后的正确指令，并给出简要使用建议。直接解答，严禁调用工具。"
+            }
+        }
+        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $task -Agent)
     }
     if ($script:Config.mode -eq 'Auto') {
         return New-AIPendingInvocationLine (ConvertTo-AIAutoShellLine $Line)
