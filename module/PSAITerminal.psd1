@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'PSAITerminal.psm1'
-    ModuleVersion = '1.0.0'
+    ModuleVersion = '1.0.1'
     GUID = 'ac841eb9-b63e-4dd0-9974-c6e7ca4a1682'
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
@@ -22,7 +22,8 @@
         'Invoke-PSAI', 'Invoke-PSAIAutoCompletion', 'Show-PSAIResultExplanation',
         'Enable-PSAIPredictor', 'Disable-PSAIPredictor',
         'Get-PSAIIntegrationStatus', 'Test-PSAIConfiguration',
-        'Install-PSAIProfileIntegration', 'Uninstall-PSAIProfileIntegration'
+        'Install-PSAIProfileIntegration', 'Uninstall-PSAIProfileIntegration',
+        'Show-AICliHelp'
     )
     CmdletsToExport = @()
     VariablesToExport = @()
@@ -32,7 +33,7 @@
             Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '1.0.0：首个正式版。支持 Windows PowerShell 5.1 x64/x86 与 PowerShell 7.4+；实现原生结构化多轮 Messages 架构、Win32 DACL 本地权限安全保护、运行时环境动态切片注入与长输出紧凑化。'
+            ReleaseNotes = '1.0.1：新终端启动自动清除上下文（新进程独立会话隔离）；支持 ai help/clear/new/mode CLI 快捷指令；增加问候与概念直接自然解答规则；强化极简原生命令生成并净化历史调度上下文。'
         }
     }
 }

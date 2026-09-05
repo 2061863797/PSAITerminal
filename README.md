@@ -74,7 +74,7 @@ PowerShell 具备智能化交互能力。
 
 ## PowerShell Gallery
 
-当前正式版本为 [`1.0.0`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.0)。
+当前正式版本为 [`1.0.1`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.1)。
 
 两个宿主（Windows PowerShell 5.1 与 PowerShell 7.4+）均可直接运行：
 
@@ -101,16 +101,44 @@ Install-PSResource -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
 
 # 🚀 Quick Start
 
-启动配置：
+启动交互配置菜单：
 
-``` powershell
+```powershell
 ai
 ```
 
-询问 AI：
+显式询问 AI 或委派本地任务（日常问答直接回复，执行命令极简原生）：
 
-``` powershell
-ai explain this command
+```powershell
+ai 你好
+ai 帮我查找当前目录下大于100MB的文件
+```
+
+一键清空当前会话上下文（开新终端时亦会自动清除上下文，告别历史包袱）：
+
+```powershell
+ai clear
+```
+
+创建并切换到全新独立会话：
+
+```powershell
+ai new "项目排错会话"
+```
+
+快速查看或切换工作模式：
+
+```powershell
+ai mode          # 查看当前工作模式
+ai mode Auto     # 切换为 Auto 智能路由模式
+ai mode AI       # 切换为纯 AI 对话模式
+ai mode Off      # 切换为纯原生 PowerShell 模式
+```
+
+查看命令行快速帮助手册：
+
+```powershell
+ai help
 ```
 
 快捷操作：
@@ -159,7 +187,7 @@ Fn + F3
 -   Windows PowerShell 5.1 (x64/x86)
 -   PowerShell 7.4+
 
-当前 `1.0.0` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
+当前 `1.0.1` 发布仅支持 Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
 
 当前发布版本：
 

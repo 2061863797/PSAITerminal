@@ -933,14 +933,26 @@ function Import-AISession([string]$Id) {
 function Initialize-AISessionState {
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:SessionDirectory)
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:RunDirectory)
-    $session = if ($script:Config.activeSession) { Import-AISession ([string]$script:Config.activeSession) } else { $null }
+
+    $procVar = Get-Variable -Name '__PSAI_ACTIVE_PROCESS_SESSION_ID' -Scope Global -ErrorAction SilentlyContinue
+    $isSameProcess = ($null -ne $procVar -and -not [string]::IsNullOrWhiteSpace([string]$procVar.Value))
+
+    $session = $null
+    if ($isSameProcess) {
+        $session = Import-AISession ([string]$procVar.Value)
+    }
+
+    # 打开新终端时自动开启全新会话，清除上下文包袱，避免跨进程/跨历史会话污染
     if (-not $session) {
-        $session = New-AISessionObject '默认会话'
+        $sessionTitle = if ((Get-AILanguage) -eq 'en-US') { 'Terminal Session' } else { '终端会话' }
+        $session = New-AISessionObject $sessionTitle
         Save-AISession $session
         if (-not $script:ConfigLoadFailed) {
             Invoke-AIConfigMutation { $script:Config.activeSession = [string]$session.id }
         } else { $script:Config.activeSession = [string]$session.id }
     }
+
+    $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
     $script:CurrentSession = $session
     $lastTool = @($session.turns | Where-Object kind -eq 'tool_result' | Select-Object -Last 1)
     if ($lastTool.Count -and $lastTool[0].metadata -is [Collections.IDictionary]) {
@@ -950,6 +962,8 @@ function Initialize-AISessionState {
             Error=if([bool]$metadata.succeeded){$null}else{[string]$metadata.output};Source='AI'
             CompletedUtc=[datetime]$lastTool[0].createdUtc;RunId=[string]$metadata.runId;StepId=[string]$metadata.stepId
         }
+    } else {
+        $script:LastCommandResult = $null
     }
 }
 
@@ -1011,6 +1025,7 @@ function New-PSAISession {
     if (-not $NoSelect -or -not $script:CurrentSession) {
         Invoke-AIConfigMutation { $script:Config.activeSession = [string]$session.id }
         $script:CurrentSession = $session
+        $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
     }
     [pscustomobject]$session
 }
@@ -1036,6 +1051,7 @@ function Select-PSAISession {
     if (-not $session) { throw "会话不存在：$Id" }
     Invoke-AIConfigMutation { $script:Config.activeSession = $Id }
     $script:CurrentSession = $session
+    $global:__PSAI_ACTIVE_PROCESS_SESSION_ID = [string]$session.id
     Get-PSAISession -Id $Id
 }
 
@@ -1056,6 +1072,8 @@ function Clear-PSAISession {
         [void]$latest.Remove('compactedTurnCount')
         Save-AISession $latest -LockHeld
         if ($Id -eq $script:Config.activeSession) { $script:CurrentSession = $latest }
+        $msg = if ((Get-AILanguage) -eq 'en-US') { "PSAITerminal session context cleared." } else { "PSAITerminal 会话上下文已清空。" }
+        Write-AIColoredHost "✓ $msg" Green
     }
 }
 #endregion
@@ -1707,9 +1725,23 @@ function ConvertTo-AIProtocolMessages([Collections.IList]$StandardMessages, [str
 function New-AIRequestBody([Collections.IDictionary]$Model, [AllowNull()][string]$Prompt = $null,
     [switch]$EnableTools, [AllowNull()][Collections.IList]$Messages = $null) {
     $baseSystem = if ((Get-AILanguage) -eq 'en-US') {
-        'You are an assistant running in the user''s local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.'
+        @"
+You are an assistant running in the user's local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.
+
+[Core Operating Rules]
+1. Direct Answers: For greetings (e.g. "hello"), conceptual questions, syntax explanations, or pure text inquiries, strictly do NOT call tools. Reply directly with a clear and natural explanation in English.
+2. Simplicity First: When commands are required, prefer the shortest, most direct native PowerShell command. Never overcomplicate commands with unnecessary loops, multi-tier pipelines, redundant variables, custom Format-Table styling, or extra Write-Host dividers.
+3. Respect User Input: If the user provides an existing command, only fix or adjust it if requested; do not arbitrarily rewrite it into a complex script.
+"@
     } else {
-        '你是运行在用户本地 PowerShell 中的助手。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。'
+        @"
+你是运行在用户本地 PowerShell 中的助手。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。
+
+[核心操作准则]
+1. 问答直接：针对问候（如 '你好'）、概念咨询、语法解释或纯文本疑问，严禁调用工具，直接给出清晰自然的中文解答；不要在桌面上搜索文件或执行任何无意义命令。
+2. 极简命令优先：当确实需要操作本机时，优先输出单行、最少、最直接的原生 PowerShell 命令。严禁无必要的复杂化包装（严禁随意添加循环、多层管道、冗余变量、自定义 Format-Table 拼接或多余的 Write-Host 分隔线）。如果一条简单原生命令即可完成，直接给出该命令。
+3. 尊重用户原意：如果用户输入本身就是一段清晰的命令，仅在需要诊断或按要求调整时处理，不要无意义地将其重写为多行复杂脚本。
+"@
     }
     $runtimeContext = Get-AIRuntimeContextText
     $system = "$baseSystem`n`n$runtimeContext"
@@ -2287,27 +2319,41 @@ function Open-AIModelsMenu {
     }
 }
 
-function Show-AIHelp {
+function Show-AICliHelp {
+    [CmdletBinding()] param()
     Write-Host ''
-    Write-AIColoredHost (Get-AIText 'CommonCommands') Magenta
+    Write-AIColoredHost $(if ((Get-AILanguage) -eq 'en-US') { 'PSAITerminal Command-Line Help' } else { 'PSAITerminal 命令行使用帮助' }) Magenta
+    Write-Host ''
     if ((Get-AILanguage) -eq 'en-US') {
-        Write-Host '  ai                         Open settings'
-        Write-Host '  ai <question>              Ask AI explicitly'
+        Write-Host '  ai                         Open interactive settings menu'
+        Write-Host '  ai <question/task>         Ask AI explicitly / execute local task'
+        Write-Host '  ai clear                   Clear current session context'
+        Write-Host '  ai new [title]             Create and switch to a new session'
+        Write-Host '  ai mode [Off|AI|Auto]      View or switch operating mode'
+        Write-Host '  ai help                    Show this command-line help'
+        Write-Host '  ai resume <RunId>          Resume an unfinished run'
         Write-Host '  Get-PSAIModel              List configured models'
         Write-Host '  Get-PSAISession            List persistent sessions'
-        Write-Host '  Get-PSAIRun                List Agent runs and recovery state'
-        Write-Host '  ai resume <RunId>          Resume an unfinished run'
-        Write-Host '  Set-PSAITerminalMode Auto  Enable Auto mode'
+        Write-Host '  Clear-PSAISession          Clear active session context'
+        Write-Host '  New-PSAISession            Create a new session'
     } else {
-        Write-Host '  ai                         打开设置'
-        Write-Host '  ai <内容>                  显式询问 AI'
-        Write-Host '  Get-PSAIModel              查看模型'
-        Write-Host '  Get-PSAISession            查看持久会话'
-        Write-Host '  Get-PSAIRun                查看 Agent Run 和恢复状态'
+        Write-Host '  ai                         打开交互配置菜单'
+        Write-Host '  ai <内容>                  显式询问 AI 或提出本地任务'
+        Write-Host '  ai clear                   一键清空当前会话上下文'
+        Write-Host '  ai new [名称]              创建并切换到全新独立会话'
+        Write-Host '  ai mode [Off|AI|Auto]      查看或切换工作模式'
+        Write-Host '  ai help                    显示本命令行帮助'
         Write-Host '  ai resume <RunId>          在顶层恢复未完成 Run'
-        Write-Host '  Set-PSAITerminalMode Auto  启用自动模式'
+        Write-Host '  Get-PSAIModel              查看已配置模型'
+        Write-Host '  Get-PSAISession            查看持久会话列表'
+        Write-Host '  Clear-PSAISession          清空当前激活会话'
+        Write-Host '  New-PSAISession            新建会话'
     }
     Write-Host ''
+}
+
+function Show-AIHelp {
+    Show-AICliHelp
 }
 
 function Show-AIShortcuts {
@@ -2497,6 +2543,17 @@ function Format-AICompactTurnContent([string]$Content, [int]$MaxLines = 50, [int
     "$head`n`n$note`n`n$tail"
 }
 
+function Test-AITurnMeaningfulForContext($Turn) {
+    if (-not $Turn) { return $false }
+    $kind = [string]$Turn.kind
+    if ($kind -eq 'tool_proposal') { return $false }
+    $content = [string]$Turn.content
+    if ($content -match '^(?i:继续完成 Run [a-f0-9]{32} 的本地任务)') { return $false }
+    if ($content -match '^(?i:Complete the user''s task\. For greetings)') { return $false }
+    if ($content -match '^(?i:完成用户的本地任务。针对问候)') { return $false }
+    return $true
+}
+
 function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
     if (-not $script:CurrentSession) { return '' }
     $parts = [Collections.Generic.List[string]]::new()
@@ -2505,6 +2562,7 @@ function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
     $turns = @($script:CurrentSession.turns)
     for ($index=$start; $index -lt $turns.Count; $index++) {
         $turn = $turns[$index]
+        if (-not (Test-AITurnMeaningfulForContext $turn)) { continue }
         $label = switch ([string]$turn.role) { 'user' {'用户'} 'assistant' {'AI'} 'tool' {'工具结果'} default {[string]$turn.role} }
         $content = Format-AICompactTurnContent ([string]$turn.content)
         $parts.Add("[$label/$($turn.kind)] $content")
@@ -2538,7 +2596,10 @@ function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.
     $source = [Collections.Generic.List[string]]::new()
     if ($script:CurrentSession.summary) { $source.Add("已有摘要：$($script:CurrentSession.summary)") }
     for ($index=$alreadyCompacted; $index -lt $targetCount; $index++) {
-        $source.Add("$($turns[$index].role)：$($turns[$index].content)")
+        $t = $turns[$index]
+        if (Test-AITurnMeaningfulForContext $t) {
+            $source.Add("$($t.role)：$($t.content)")
+        }
     }
     $summaryPrompt = "把下面本地终端会话压缩为简洁事实摘要。保留用户目标、关键路径、已执行命令、结果、错误、未完成事项和明确偏好；不要补充不存在的信息；不要调用工具。`n`n$(Protect-AIText ($source -join "`n") 60000)"
     $previousSummary = [string]$script:CurrentSession.summary
@@ -2588,6 +2649,7 @@ function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 1
     $turns = @($script:CurrentSession.turns)
     for ($index = $start; $index -lt $turns.Count; $index++) {
         $turn = $turns[$index]
+        if (-not (Test-AITurnMeaningfulForContext $turn)) { continue }
         $rawRole = [string]$turn.role
         $role = if ($rawRole -eq 'assistant') { 'assistant' } else { 'user' }
         $content = Format-AICompactTurnContent ([string]$turn.content)
@@ -2806,7 +2868,7 @@ function ConvertFrom-AIToolCall($Call) {
     }
     foreach ($field in @('purpose','command','expectedOutcome','sideEffects','rollbackHint')) {
         if ([string]::IsNullOrWhiteSpace([string]$arguments[$field])) { throw "PowerShell 工具参数缺少 $field。" }
-        $arguments[$field] = Protect-AIText ([string]$arguments[$field]) $(if($field -eq 'command'){16384}else{4096})
+        $arguments[$field] = Protect-AIText ([string]$arguments[$field]) $(if ($field -eq 'command') { 16384 } else { 4096 })
     }
     $tokens=$null; $parseErrors=$null
     $ast = [Management.Automation.Language.Parser]::ParseInput([string]$arguments.command,[ref]$tokens,[ref]$parseErrors)
@@ -2901,8 +2963,17 @@ function Invoke-AIHarnessModelStep([Collections.IDictionary]$Run, [Threading.Can
         throw "当前模型 '$($model.name)' 未启用结构化工具调用，只能用于问答和解释。"
     }
     Set-AIRunState $Run 'CallingModel' @{model=$model.name}
-    $instruction = "继续完成 Run $($Run.id) 的本地任务。需要执行命令时必须调用 powershell 工具；已有结果足够时直接给出总结，不要调用工具。"
-    if ($RepairMessage) { $instruction += "`n上一次工具调用无效：$RepairMessage。请只修正一次。" }
+    $lang = Get-AILanguage
+    $instruction = if ($lang -eq 'en-US') {
+        "Complete the user's task. For greetings, conceptual questions, or pure text inquiries, strictly do NOT call tools—reply directly with a clear and natural explanation in English. Only call the powershell tool when local terminal action is genuinely required, and keep the command minimal, native, and clean without unnecessary complexity. When results are sufficient, provide a concise summary without calling tools."
+    } else {
+        "完成用户的本地任务。针对问候（如 '你好'）、概念咨询或纯文本疑问，严禁调用工具，直接给出清晰自然的中文解答；仅在确实需要操作本机终端时调用 powershell 工具，且必须保持命令极简原生，严禁过度复杂化包装。已有结果足够时直接给出简洁总结，不要调用工具。"
+    }
+    if ($RepairMessage) {
+        $repairPrefix = if ($lang -eq 'en-US') { "`nPrevious tool call was invalid: $RepairMessage. Please fix it once and keep the command minimal." }
+        else { "`n上一次工具调用无效：$RepairMessage。请只修正一次，并保持命令简洁原生。" }
+        $instruction += $repairPrefix
+    }
     Set-AIRunState $Run 'Streaming' @{model=$model.name}
     $response = Invoke-AISessionModel $model $instruction -EnableTools -CancellationToken $CancellationToken
     $usagePersisted = $false
@@ -3385,6 +3456,17 @@ function ConvertTo-AISubmittedLine([string]$Line) {
 
     $trimmed = $Line.Trim()
     if ($trimmed -match '^(?i:ai)$') { return 'Open-PSAISettings' }
+    if ($trimmed -match '^(?i:ai)\s+(?:help|\?|--help|-h)$') { return 'Show-AICliHelp' }
+    if ($trimmed -match '^(?i:ai)\s+(?:clear|reset)$') { return 'Clear-PSAISession' }
+    if ($trimmed -match '^(?i:ai)\s+new(?:\s+(.+))?$') {
+        $title = if ($Matches[1]) { $Matches[1].Trim() } else { '新会话' }
+        $escapedTitle = $title.Replace("'", "''")
+        return "New-PSAISession -Title '$escapedTitle'"
+    }
+    if ($trimmed -match '^(?i:ai)\s+mode(?:\s+(Off|AI|Auto))?$') {
+        if ($Matches[1]) { return "Set-PSAITerminalMode -Mode '$($Matches[1])'" }
+        return 'Get-PSAITerminalMode'
+    }
     if ($trimmed -match '^(?i:ai)\s+resume\s+([a-f0-9]{32})$') {
         return New-AIPendingInvocationLine (New-AITopLevelHarnessScript "Resume-PSAIRun -Id '$($Matches[1])'")
     }
@@ -3891,7 +3973,8 @@ Export-ModuleMember -Function @(
     'Start-PSAIRun','Get-PSAIRun','Resume-PSAIRun','Resolve-PSAIRun','Stop-PSAIRun',
     'Start-PSAIToolExecution','Complete-PSAIToolExecution','Start-PSAIAutoFallback',
     'Invoke-PSAI','Invoke-PSAIAutoCompletion','Show-PSAIResultExplanation','Enable-PSAIPredictor','Disable-PSAIPredictor',
-    'Get-PSAIIntegrationStatus','Test-PSAIConfiguration','Install-PSAIProfileIntegration','Uninstall-PSAIProfileIntegration'
+    'Get-PSAIIntegrationStatus','Test-PSAIConfiguration','Install-PSAIProfileIntegration','Uninstall-PSAIProfileIntegration',
+    'Show-AICliHelp'
 ) -Alias @('Configure-PSAI')
 #endregion
 
