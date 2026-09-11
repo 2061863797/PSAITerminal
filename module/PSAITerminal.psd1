@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'PSAITerminal.psm1'
-    ModuleVersion = '1.0.3'
+    ModuleVersion = '1.0.4'
     GUID = 'ac841eb9-b63e-4dd0-9974-c6e7ca4a1682'
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
@@ -23,7 +23,7 @@
         'Enable-PSAIPredictor', 'Disable-PSAIPredictor',
         'Get-PSAIIntegrationStatus', 'Test-PSAIConfiguration',
         'Install-PSAIProfileIntegration', 'Uninstall-PSAIProfileIntegration',
-        'Show-AICliHelp'
+        'Uninstall-PSAITerminal', 'Show-AICliHelp'
     )
     CmdletsToExport = @()
     VariablesToExport = @()
@@ -33,7 +33,7 @@
             Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '1.0.3：深度重塑交互架构与路由。自然语言二分类（自由沟通纯文本 vs 操作指令六要素）；错误诊断与自愈闭环；统一三项批准菜单；单步完结保护杜绝文件探测发散；按 F7 解释；目标导向自主规划与障碍说明。'
+            ReleaseNotes = '1.0.4：咨询、操作、待澄清三类路由；结构化计划与完成条件；统一六项审批说明；编辑失效与说明失败关闭；Run v2 恢复阶段和失败诊断。Windows PowerShell 5.1 与 PowerShell 7.4+。'
         }
     }
 }

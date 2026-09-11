@@ -141,7 +141,16 @@ jobs:
 
       - name: 运行完整回归
         shell: pwsh
-        run: '& $env:PSAI_PWSH -NoLogo -NoProfile -File ./tests/run.ps1'
+        run: |
+          $hosts = @(
+            (Join-Path $env:windir 'System32/WindowsPowerShell/v1.0/powershell.exe'),
+            (Join-Path $env:windir 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'),
+            $env:PSAI_PWSH
+          )
+          foreach ($testHost in $hosts) {
+            & $testHost -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./tests/run.ps1
+            if ($LASTEXITCODE -ne 0) { throw "完整回归失败：$testHost" }
+          }
 
       - name: 验证 5.1 x64、5.1 x86 与 7.6.4 共享状态
         shell: pwsh
@@ -222,6 +231,7 @@ jobs:
             'bin/PSAITerminal.PowerShell7.dll'
             'README.md'
             'CHANGELOG.md'
+            'docs/acceptance-1.0.4.md'
             'LICENSE'
             'Install-PSAITerminal.ps1'
             'Uninstall-PSAITerminal.ps1'

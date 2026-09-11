@@ -18,6 +18,15 @@ $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("PSAITerminal.Tests." + [guid]
 $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'config'
 $env:PSAI_DATA_HOME = Join-Path $testRoot 'data'
 $isWindowsHost = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+if ($isWindowsHost -and $env:ProgramW6432) {
+    $x64Modules = Join-Path $env:ProgramW6432 'WindowsPowerShell\Modules'
+    if (Test-Path -LiteralPath $x64Modules) {
+        $modulePaths = @($env:PSModulePath -split [IO.Path]::PathSeparator | Where-Object { $_ })
+        if ($modulePaths -notcontains $x64Modules) {
+            $env:PSModulePath = "$x64Modules;$env:PSModulePath"
+        }
+    }
+}
 [void][IO.Directory]::CreateDirectory($testRoot)
 
 function Assert-Equal($Expected, $Actual, [string]$Message) {
@@ -293,6 +302,22 @@ try {
     }
     Assert-Equal 2 $menuEntryProbe.Count '设置和语言菜单入口必须各读取一次选择后正常返回。'
     Assert-Match $menuEntryProbe.Prompts 'Enter a number.*Select language' '菜单必须把本地化提示作为字符串传给 Read-Host。'
+    $menuUninstallProbe = & $module {
+        $prompts = [Collections.Generic.List[string]]::new()
+        function Read-Host {
+            param([Parameter(ValueFromRemainingArguments)]$Arguments)
+            $prompt = ($Arguments -join ' ')
+            $prompts.Add($prompt)
+            if ($prompts.Count -eq 1) { return '7' }
+            if ($prompts.Count -eq 2) { return 'n' }
+            return '0'
+        }
+        try {
+            Open-PSAISettings 6>$null
+            [pscustomobject]@{Count=$prompts.Count;Prompts=($prompts -join '|')}
+        } finally { Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue }
+    }
+    Assert-True ($menuUninstallProbe.Count -ge 2) '设置菜单选择 7 必须进入卸载确认，且用户取消后能安全返回。'
     $configLimitProbe = & $module {
         $previousLimit = $script:MaximumConfigBytes
         $previousRevision = Get-AIRevision $script:Config '配置'
@@ -388,7 +413,7 @@ try {
     }
     Assert-Equal "  Write-Output '原文'  " $submittedLineProbe.Shell '强制 Shell 必须逐字返回用户提交的原文。'
     Assert-Equal "  完全保留 大小写 '和引号'  " $submittedLineProbe.Last '交给 AI 时必须逐字保存用户提交的原文。'
-    Assert-Equal '. (Invoke-PSAI)' $submittedLineProbe.AI '读取完成后才可返回不可见的内部调度命令。'
+    Assert-Equal '. (Invoke-PSAI)' $submittedLineProbe.AI 'F2/ForceAI 必须保留显式交给 AI 的语义。'
     & $module { $script:Config.mode = 'Off'; $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId=$null }
 
     $routeDirectoryQuestion = & $module { param($line) Test-AIAutoRoute $line } "$testRoot 这个目录里有什么"
@@ -562,7 +587,8 @@ try {
         } $redirectSource.Port } 'HTTP 302' '带凭据的模型请求不能自动跟随重定向。'
     } finally { Stop-AIMockServer $redirectSource }
 
-    $normalizedArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示日期';sideEffects='无';rollbackHint='无需回滚'} | ConvertTo-Json -Compress
+    $singlePlan = [ordered]@{mode='Single';steps=@('读取日期');completionCondition='显示日期'}
+    $normalizedArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示日期';sideEffects='无';rollbackHint='无需回滚';plan=$singlePlan;stepIndex=1;stepRole='Operation';afterSuccess='Complete'} | ConvertTo-Json -Depth 10 -Compress
     $responsesAdded = @{type='response.output_item.added';item=@{type='function_call';id='item-1';call_id='call-1';name='powershell';arguments=''}} | ConvertTo-Json -Compress
     $responsesDone = @{type='response.function_call_arguments.done';item_id='item-1';arguments=$normalizedArguments} | ConvertTo-Json -Compress
     $responsesCompleted = @{type='response.completed';response=@{usage=@{input_tokens=2;output_tokens=3}}} | ConvertTo-Json -Compress
@@ -789,7 +815,7 @@ try {
     } finally { Stop-AIMockServer $server }
 
     # 原生工具调用、多步骤观察和 Run 检查点。
-    $toolArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示当前日期';sideEffects='无';rollbackHint='无需回滚'}
+    $toolArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示当前日期';sideEffects='无';rollbackHint='无需回滚';plan=$singlePlan;stepIndex=1;stepRole='Operation';afterSuccess='Complete'}
     $invalidToolArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示当前日期';sideEffects='无'}
     $invalidToolResponse = [ordered]@{message=@{tool_calls=@(@{id='call-invalid';function=@{name='powershell';arguments=$invalidToolArguments}})};done=$true} | ConvertTo-Json -Depth 20 -Compress
     $toolResponse = [ordered]@{message=@{tool_calls=@(@{id='call-1';function=@{name='powershell';arguments=$toolArguments}})};done=$true} | ConvertTo-Json -Depth 20 -Compress
@@ -810,14 +836,125 @@ try {
         Start-PSAIToolExecution -RunId $step.RunId -StepId $step.StepId `
             -Command $step.Command -ApprovalDigest $step.ApprovalDigest -ApprovalRevision $step.ApprovalRevision
         $next = Complete-PSAIToolExecution -RunId $step.RunId -StepId $step.StepId -Succeeded $true -Output '2026-08-11'
-        Assert-Equal $null $next '模型总结后不应继续产生工具步骤。'
-        Assert-Equal 'Completed' (Get-PSAIRun -Id $step.RunId).State 'Run 应完成执行、观察和总结循环。'
+        Assert-Equal $null $next '单步成功后不应继续请求模型或工具步骤。'
+        Assert-Equal 'Completed' (Get-PSAIRun -Id $step.RunId).State '单步成功必须直接完成。'
         Assert-Equal 'alternate' (Get-PSAIModel | Where-Object Active).Name '模型切换应在下一步骤生效且保持同一 Run。'
         Remove-PSAIModel -Name alternate -ReplacementModel local -Confirm:$false
     } finally {
         Stop-AIMockServer $proposalServer; Stop-AIMockServer $finalServer
         Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue
     }
+
+    # 正文 Markdown / 裸 JSON 工具调用容错提取与计划自适应纠偏测试
+    $markdownToolText = @'
+发现变量赋值存在语法错误，未闭合的括号导致异常。
+
+```json
+{
+  "purpose": "检查并恢复变量环境",
+  "command": "Get-Variable -Name x -ErrorAction SilentlyContinue",
+  "expectedOutcome": "安全检查变量 x 的状态",
+  "sideEffects": "无",
+  "rollbackHint": "无需回滚",
+  "plan": {
+    "mode": "Single",
+    "steps": [
+      "检查变量 x 状态",
+      "验证输出与环境正常"
+    ],
+    "completionCondition": "命令正常完成"
+  },
+  "stepIndex": 1,
+  "stepRole": "Operation",
+  "afterSuccess": "Observe"
+}
+```
+'@
+    $extracted = & $module { param($txt) Find-AITextToolCall $txt } $markdownToolText
+    Assert-True ($null -ne $extracted) '必须能从 Markdown 代码块中提取工具调用。'
+    Assert-Equal 'powershell' $extracted.ToolCall.name '提取的工具名称必须为 powershell。'
+    Assert-Match $extracted.CleanedText '未闭合的括号导致异常' '提取后必须保留正文中的自然语言说明。'
+    Assert-Equal $false ($extracted.CleanedText.Contains('```')) '提取后正文不能残留 Markdown 代码块标记。'
+    Assert-Equal 'Get-Variable -Name x -ErrorAction SilentlyContinue' $extracted.ToolCall.arguments.command '提取的命令必须完全一致。'
+
+    # ConvertTo-AIValidatedPlan 容错纠偏：steps > 1 即使 mode 误标 Single 也自适应纠正为 Multi
+    $validatedPlan = & $module { param($p) ConvertTo-AIValidatedPlan $p } $extracted.ToolCall.arguments.plan
+    Assert-Equal 'Multi' $validatedPlan.mode '多步骤计划被误标为 Single 时必须自适应纠正为 Multi。'
+    Assert-Equal 2 @($validatedPlan.steps).Count '步骤数量必须完整保留。'
+
+    # Find-AITextToolCall 容错提取：支持 YAML/键值列表格式工具提议
+    $yamlToolText = @"
+根因说明：查询系统密钥。
+计划：
+- mode: Single
+- steps: ["读取注册表存储的产品密钥"]
+- completionCondition: 成功输出产品密钥
+- stepIndex: 1
+- stepRole: Operation
+- afterSuccess: Complete
+- sideEffects: 无
+- rollbackHint: 无需回滚
+- purpose: 查询系统产品密钥
+- command: `Get-ItemProperty -Path 'HKLM:\Software'`
+- expectedOutcome: 返回产品密钥
+"@
+    $extractedYaml = & $module { param($txt) Find-AITextToolCall $txt } $yamlToolText
+    Assert-True ($null -ne $extractedYaml) '必须能从 YAML/列表文本中提取工具调用。'
+    Assert-Equal 'Get-ItemProperty -Path ''HKLM:\Software''' $extractedYaml.ToolCall.arguments.command '提取的 YAML 命令必须一致。'
+    Assert-Equal '查询系统产品密钥' $extractedYaml.ToolCall.arguments.purpose '提取的 YAML 目的必须一致。'
+    Assert-Match $extractedYaml.CleanedText '根因说明：查询系统密钥。' '提取后必须保留说明文字。'
+    Assert-Equal $false ($extractedYaml.CleanedText.Contains('- command:')) '提取后不能残留命令键值列表。'
+
+
+    # 模拟真实模型仅返回 Markdown JSON 块时的端到端容错执行
+    $fallbackResponse = [ordered]@{message=@{content=$markdownToolText};done=$true} | ConvertTo-Json -Depth 20 -Compress
+    $fallbackServer = Start-AIMockServer @($fallbackResponse)
+    try {
+        Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($fallbackServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
+        function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) '' }
+        try {
+            $fallbackRun = Start-PSAIRun -Task '修复语法错误' -Failure ([ordered]@{task='修复';command='$x = )';output='语法错误';succeeded=$false;exitCode=$null})
+        } finally {
+            Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue
+        }
+        Assert-True ($null -ne $fallbackRun) '正文 JSON 工具调用必须被成功转换为待执行步骤。'
+        Assert-Equal 'Get-Variable -Name x -ErrorAction SilentlyContinue' $fallbackRun.Command '待执行步骤命令必须是提取出的修复命令。'
+        Assert-Match ([string]$fallbackRun.ApprovalDigest) '^[a-f0-9]{64}$' '待执行步骤必须具备合法的批准摘要。'
+        Stop-PSAIRun -Id $fallbackRun.RunId | Out-Null
+    } finally {
+        Stop-AIMockServer $fallbackServer
+    }
+
+    # 验证 EnableTools 时的专属智能体系统提示词及历史会话中的 JSON 块净化
+    $agentPromptChecks = & $module {
+        $model = @{protocol='OpenAIChat';modelId='model';parameters=@{}}
+        $agentBody = New-AIRequestBody $model 'test' -EnableTools
+        $agentSystem = [string]$agentBody.messages[0].content
+        $prevSession = $script:CurrentSession
+        try {
+            $script:CurrentSession = [ordered]@{
+                id = [guid]::NewGuid().ToString('N')
+                summary = ''
+                turns = @(
+                    [ordered]@{ role = 'user'; kind = 'task'; content = '查 IP' },
+                    [ordered]@{ role = 'assistant'; kind = 'message'; content = "分析说明`n" + '```json' + "`n" + '{"purpose":"查IP","command":"ipconfig"}' + "`n" + '```' }
+                )
+            }
+            $sanitizedMessages = Get-AISessionMessages -Instruction '后续任务'
+            $assistantMsg = ($sanitizedMessages | Where-Object role -eq 'assistant').content
+            [pscustomobject]@{
+                AgentSystem = $agentSystem
+                AssistantContent = $assistantMsg
+            }
+        } finally {
+            $script:CurrentSession = $prevSession
+        }
+    }
+    Assert-Match $agentPromptChecks.AgentSystem 'Agent Operating Rules' '英文智能体提示词必须包含智能体操作准则。'
+    Assert-Equal $false ($agentPromptChecks.AgentSystem.Contains('strictly do NOT call tools')) '智能体模式下严禁包含禁止调用工具的冲突规则。'
+    Assert-Equal $false ($agentPromptChecks.AssistantContent.Contains('```json')) '历史会话中残留的 JSON 代码块必须在装配给模型前被净化。'
+    Assert-Match $agentPromptChecks.AssistantContent 'Proposed Command: ipconfig' '净化后的内容必须保留可读的操作描述。'
+
 
     $interruptedId = & $module {
         $id=[guid]::NewGuid().ToString('N')
@@ -861,11 +998,14 @@ try {
     $approvalBinding = & $module {
         $id = [guid]::NewGuid().ToString('N')
         $run = [ordered]@{
-            schemaVersion=1;revision=0L;id=$id;sessionId=$script:CurrentSession.id;task='批准绑定测试'
+            schemaVersion=2;revision=0L;id=$id;sessionId=$script:CurrentSession.id;task='批准绑定测试'
+            plan=[ordered]@{mode='Single';steps=@('读取日期');completionCondition='显示日期'};nextStep=1;phase='Normal';lastFailure=$null;lastResult=$null
             state='AwaitingApproval';stepCount=1;maxSteps=2
             pendingProposal=[ordered]@{id='call-binding';stepId=[guid]::NewGuid().ToString('N');purpose='读取日期';command='Get-Date';expectedOutcome='显示日期';sideEffects='无';rollbackHint='无需回滚';risk='Low'}
             events=@();createdUtc=[DateTime]::UtcNow.ToString('O');updatedUtc=[DateTime]::UtcNow.ToString('O')
         }
+        $run.pendingProposal.plan=$run.plan; $run.pendingProposal.stepIndex=1
+        $run.pendingProposal.stepRole='Operation'; $run.pendingProposal.afterSuccess='Complete'
         Save-AIRun $run
         $oldApproval = Set-AIProposalApproval $run $run.pendingProposal (Get-AICommandRisk $run.pendingProposal.command)
         $oldStep = [pscustomobject]@{
@@ -993,7 +1133,8 @@ try {
         [void]$RunId; [void]$StepId; [void]$Command; [void]$ApprovalDigest; [void]$ApprovalRevision
     }
     function global:Complete-PSAIToolExecution {
-        param($RunId,$StepId,[bool]$Succeeded,$Output)
+        param($RunId,$StepId,[bool]$Succeeded,$Output,$ExitCode)
+        [void]$ExitCode
         [void]$RunId; [void]$StepId
         Set-Variable -Name HarnessObservedSuccess -Scope Global -Value $Succeeded
         Set-Variable -Name HarnessObservedOutput -Scope Global -Value $Output
@@ -1117,6 +1258,51 @@ try {
     Assert-Equal $false ((Get-Content -LiteralPath $testProfile -Raw) -match 'PSAITerminal 自动加载') '卸载器必须移除自己的 Profile 区块。'
     $env:PSModulePath = $originalModulePath
 
+    # 测试模块内置 Uninstall-PSAITerminal 与清单导出
+    $manifest = Import-PowerShellDataFile (Join-Path $moduleOutput 'PSAITerminal.psd1')
+    Assert-True ($manifest.FunctionsToExport -contains 'Uninstall-PSAITerminal') '模块清单必须导出 Uninstall-PSAITerminal。'
+
+    # 在隔离子进程中测试模块内置 Uninstall-PSAITerminal 的 Profile 清理与用户数据清除
+    $sandboxModuleDir = Join-Path $testRoot 'installer/sandbox-module/PSAITerminal'
+    Copy-Item -LiteralPath $moduleOutput -Destination $sandboxModuleDir -Recurse -Force
+    $testBuiltinProfile = Join-Path $testRoot 'builtin-uninstall-profile.ps1'
+    $testBuiltinConfig = Join-Path $testRoot 'builtin-uninstall-config'
+    $testBuiltinData = Join-Path $testRoot 'builtin-uninstall-data'
+    $escapedSandboxPsd1 = [IO.Path]::GetFullPath((Join-Path $sandboxModuleDir 'PSAITerminal.psd1')).Replace("'", "''")
+    $escapedProfile = [IO.Path]::GetFullPath($testBuiltinProfile).Replace("'", "''")
+    $escapedConfig = [IO.Path]::GetFullPath($testBuiltinConfig).Replace("'", "''")
+    $escapedData = [IO.Path]::GetFullPath($testBuiltinData).Replace("'", "''")
+
+    $testBuiltinScript = Join-Path $testRoot 'builtin-uninstall-test.ps1'
+    $builtinTestScript = @"
+`$ErrorActionPreference = 'Stop'
+`$testProfile = '$escapedProfile'
+`$testConfig = '$escapedConfig'
+`$testData = '$escapedData'
+[IO.File]::WriteAllText(`$testProfile, "# User Profile Content`r`n# PSAITerminal 自动加载（开始）`r`nImport-Module PSAITerminal`r`n# PSAITerminal 自动加载（结束）`r`n", [Text.Encoding]::UTF8)
+[void][IO.Directory]::CreateDirectory(`$testConfig)
+[void][IO.Directory]::CreateDirectory(`$testData)
+[IO.File]::WriteAllText((Join-Path `$testConfig 'config.json'), '{"test":1}', [Text.Encoding]::UTF8)
+[IO.File]::WriteAllText((Join-Path `$testData 'cache.dat'), '123', [Text.Encoding]::UTF8)
+
+`$env:PSAI_CONFIG_HOME = `$testConfig
+`$env:PSAI_DATA_HOME = `$testData
+`$PROFILE.CurrentUserCurrentHost = `$testProfile
+
+Import-Module '$escapedSandboxPsd1' -Force
+Uninstall-PSAITerminal -PurgeUserData -Force
+`$profileAfter = [IO.File]::ReadAllText(`$testProfile, [Text.Encoding]::UTF8)
+if (`$profileAfter -match 'PSAITerminal 自动加载') { exit 10 }
+if (-not (`$profileAfter -match '# User Profile Content')) { exit 11 }
+if (Test-Path -LiteralPath `$testConfig) { exit 12 }
+if (Test-Path -LiteralPath `$testData) { exit 13 }
+exit 0
+"@
+    [IO.File]::WriteAllText($testBuiltinScript, $builtinTestScript, (New-Object Text.UTF8Encoding($true)))
+    $hostExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
+    & $hostExe -NoProfile -ExecutionPolicy Bypass -File $testBuiltinScript
+    Assert-Equal 0 $LASTEXITCODE '模块内置 Uninstall-PSAITerminal 必须安全清理 Profile 自动加载并清除指定用户数据。'
+
     # Both 只能使用两个标准用户目录；测试通过专用文档根隔离，绝不触碰真实安装目录。
     $env:PSAI_TEST_DOCUMENTS_HOME = Join-Path $testRoot 'installer/both-documents'
     $env:PSAI_TEST_MODE = '1'
@@ -1162,6 +1348,13 @@ try {
         Remove-Item Env:PSAI_TEST_MODE -ErrorAction SilentlyContinue
     }
 
+    $probeHost = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' } else { 'pwsh.exe' })
+    & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'intent-probe.ps1') -AssemblyPath (Join-Path $moduleOutput 'bin/PSAITerminal.dll')
+    if ($LASTEXITCODE -ne 0) { throw '意图分流回归失败。' }
+    & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'approval-probe.ps1')
+    if ($LASTEXITCODE -ne 0) { throw '审批说明回归失败。' }
+    & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'reliability.ps1') -ModulePath $modulePath
+    if ($LASTEXITCODE -ne 0) { throw '交互可靠性回归失败。' }
     Write-Host 'PSAITerminal 完整回归测试通过。' -ForegroundColor Green
 } finally {
     Remove-Item Function:\Read-Host,Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue

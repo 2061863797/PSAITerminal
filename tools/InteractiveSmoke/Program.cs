@@ -29,7 +29,7 @@ Directory.CreateDirectory(stateRoot);
 string alternateManifestPath = manifestPath;
 if (!useProfile)
 {
-    string moduleVersion = "1.0.3";
+    string moduleVersion = "1.0.4";
     foreach (string line in File.ReadLines(manifestPath))
     {
         string trimmed = line.Trim();
@@ -160,7 +160,7 @@ try
 
     if (!useProfile)
     {
-        // F2 使用 xterm/ConPTY 的 SS3 Q 序列。未配置模型时应进入 AI 路径并给出明确错误。
+        // F2 使用 xterm/ConPTY 的 SS3 Q 序列。显式强制 AI 时，未知输入仍进入原 AI 路径。
         terminal.Send("PSAI_F2_PROBE");
         terminal.Send("\u001bOQ");
         terminal.WaitFor("尚未配置活动模型", TimeSpan.FromSeconds(15));

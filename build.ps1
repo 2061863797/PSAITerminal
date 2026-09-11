@@ -52,13 +52,16 @@ try {
         'LICENSE' = 'LICENSE'
         'README.md' = 'README.md'
         'CHANGELOG.md' = 'CHANGELOG.md'
+        'docs/acceptance-1.0.4.md' = 'docs/acceptance-1.0.4.md'
         'Install-PSAITerminal.ps1' = 'Install-PSAITerminal.ps1'
         'Uninstall-PSAITerminal.ps1' = 'Uninstall-PSAITerminal.ps1'
     }
     foreach ($entry in $publishFiles.GetEnumerator()) {
         $sourcePath = Join-Path $projectRoot $entry.Key
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "发布源文件不存在：$sourcePath" }
-        Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $stagingRoot $entry.Value) -Force
+        $destinationPath = Join-Path $stagingRoot $entry.Value
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destinationPath))
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
     }
     foreach ($helpCulture in @('zh-CN','en-US')) {
         $helpSource = Join-Path $projectRoot "module/$helpCulture"

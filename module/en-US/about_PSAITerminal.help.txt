@@ -14,7 +14,7 @@ GETTING STARTED
 
 MODES
     Off   Enter always executes PowerShell normally.
-    AI    Enter sends input to the active AI model.
+    AI    Natural language is routed to AI; valid Shell input keeps its execution path.
     Auto  Deterministic PowerShell commands run directly; natural-language or failed commands go to AI.
 
 LANGUAGE
@@ -46,15 +46,31 @@ COMMON COMMANDS
     Get-PSAISession
     Get-PSAIRun
     Set-PSAITerminalMode Off|AI|Auto
+    Uninstall-PSAITerminal
 
 SAFETY CONFIRMATION
     AI-generated purpose, expected-result, and side-effect descriptions may be inaccurate.
     Treat the complete command shown on the approval screen as authoritative.
     High-risk commands have no Enter-to-execute default and require a second confirmation.
-    Approval is bound to the command digest and Run revision; changes require reapproval.
+    All risk levels display purpose, command, expected result, side effects, rollback, and local risk.
+    Approval binds the command, descriptions, plan progression, and Run revision.
+    Editing revokes approval and regenerates four descriptions without tools. Invalid or failed
+    descriptions block approval; edit again or reject. Model-provided risk is not trusted.
     Rollback text is AI-generated guidance; the module does not automatically back up, undo,
     or restore system state.
     Commands run with the current user's permissions in the current PowerShell session, not a sandbox.
+
+RELIABILITY (1.0.4)
+    Consultation requests have no tools. Ambiguous input asks for a complete new request locally.
+    Structured plans determine completion, not task keywords. A successful final step completes
+    without another model request; intermediate steps continue with actual output. Reserve a
+    verification step if the final artifact still needs checking. F7 explains only on request.
+    Run v2 persists the plan, completion condition, step role, result, and Normal/Cleanup/Retry phase.
+    Cleanup success returns to the original step. Cleanup failure pauses until explicit resume.
+    Every cleanup and retry needs approval and counts toward the step limit. No guaranteed recovery
+    or exhaustive side-effect detection is provided. Failed commands display failure, not completion.
+    Completed legacy Runs remain readable. Unfinished legacy Runs must replan and reapprove.
+    Uncertain executions require Resolve-PSAIRun before resuming; they are never automatically replayed.
 
 NOTES
     No model is bundled. The first installation starts in Off mode and does not connect automatically.

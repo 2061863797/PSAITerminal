@@ -85,7 +85,8 @@ function global:Start-PSAIToolExecution {
     [void]$RunId; [void]$StepId; [void]$Command; [void]$ApprovalDigest; [void]$ApprovalRevision
 }
 function global:Complete-PSAIToolExecution {
-    param($RunId,$StepId,[bool]$Succeeded,$Output)
+    param($RunId,$StepId,[bool]$Succeeded,$Output,$ExitCode)
+    [void]$ExitCode
     [void]$RunId; [void]$StepId
     $global:HostProbeHarnessSuccess = $Succeeded
     $global:HostProbeHarnessOutput = $Output
