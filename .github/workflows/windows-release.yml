@@ -373,3 +373,50 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "发布 Release 失败：$LASTEXITCODE" }
           "已自动创建 Release：$tag" |
             Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+
+      - name: 发布到 PowerShell Gallery
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY || secrets.POWERSHELL_GALLERY_KEY || secrets.POWERSHELL_GALLERY_API_KEY || secrets.PSGALLERY_KEY || secrets.PSGALLERY_TOKEN }}
+          PSAI_RELEASE_LABEL: ${{ needs.test.outputs.release_label }}
+        run: |
+          if (-not $env:PSGALLERY_API_KEY) {
+            Write-Warning "未检测到 PSGALLERY_API_KEY 密钥，跳过 PowerShell Gallery 发布。"
+            "未检测到 PSGALLERY_API_KEY 密钥，跳过 PowerShell Gallery 发布。" |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            exit 0
+          }
+
+          $nupkg = (Get-ChildItem -LiteralPath './release-assets' -Recurse -File |
+            Where-Object Name -CEQ "PSAITerminal.$env:PSAI_RELEASE_LABEL.nupkg" |
+            Select-Object -First 1).FullName
+          if (-not $nupkg) {
+            throw "未找到待发布的 nupkg 包：PSAITerminal.$env:PSAI_RELEASE_LABEL.nupkg"
+          }
+
+          Write-Host "准备发布到 PowerShell Gallery：$nupkg"
+
+          $publishCmd = Get-Command Publish-PSResource -ErrorAction SilentlyContinue
+          try {
+            if ($publishCmd) {
+              Publish-PSResource -NupkgPath $nupkg -ApiKey $env:PSGALLERY_API_KEY -Repository PSGallery -Verbose
+            } else {
+              $moduleDir = (Get-ChildItem -LiteralPath './release-assets' -Recurse -Directory |
+                Where-Object { Test-Path (Join-Path $_.FullName 'PSAITerminal.psd1') } |
+                Select-Object -First 1).FullName
+              if (-not $moduleDir) { throw "未找到模块解压目录以执行 Publish-Module" }
+              Publish-Module -Path $moduleDir -NuGetApiKey $env:PSGALLERY_API_KEY -Repository PSGallery -Verbose
+            }
+            Write-Host "已成功发布到 PowerShell Gallery：PSAITerminal $env:PSAI_RELEASE_LABEL" -ForegroundColor Green
+            "已成功发布到 PowerShell Gallery：PSAITerminal $env:PSAI_RELEASE_LABEL" |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          } catch {
+            if ($_.Exception.Message -match 'already exists' -or $_.Exception.Message -match '已存在') {
+              Write-Warning "PowerShell Gallery 已存在该版本：$($_.Exception.Message)"
+              "PowerShell Gallery 已存在版本 $env:PSAI_RELEASE_LABEL，跳过重复推送。" |
+                Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+            } else {
+              throw
+            }
+          }
+
