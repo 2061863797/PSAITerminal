@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Management.Automation.Language;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -237,6 +238,8 @@ public static class AITerminalInputRouter
         }
 
         string trimmed = line!.Trim();
+        // 礼貌前缀只参与分类，提交给模型的原文由调用方保留。
+        trimmed = Regex.Replace(trimmed, @"^(?:请问(?:一下)?|请教(?:一下)?|麻烦问(?:一下|下)?)\s*", string.Empty);
 
         // 1. 常见问候语（你好、hi、hello、早上好、在吗等）
         if (Regex.IsMatch(trimmed, @"^(?i:你好|您好|hello|hi|hey|good\s*(morning|afternoon|evening)|早上好|下午好|晚上好|在吗|在不在|哈喽)[\s!！?？~～]*$"))
@@ -266,7 +269,7 @@ public static class AITerminalInputRouter
             return "Consultation";
         }
 
-        if (Regex.IsMatch(trimmed, @"(?:是什么|是什么意思|有何区别|怎么回事)[\s!！?？~～]*$"))
+        if (Regex.IsMatch(trimmed, @"(?:是什么|是什么意思|有何区别|有什么区别|区别是什么|怎么回事)[\s!！?？~～]*$"))
         {
             return "Consultation";
         }
@@ -466,6 +469,16 @@ public static class AITerminalSecurity
         ["sp"] = "Set-ItemProperty",
         ["sv"] = "Set-Variable",
         ["tee"] = "Tee-Object",
+        ["dir"] = "Get-ChildItem",
+        ["ls"] = "Get-ChildItem",
+        ["gci"] = "Get-ChildItem",
+        ["cat"] = "Get-Content",
+        ["gc"] = "Get-Content",
+        ["type"] = "Get-Content",
+        ["select"] = "Select-Object",
+        ["where"] = "Where-Object",
+        ["sort"] = "Sort-Object",
+        ["measure"] = "Measure-Object",
     };
 
     private static readonly HashSet<string> s_highRiskCommandNames = new(StringComparer.OrdinalIgnoreCase)
@@ -766,6 +779,18 @@ public static class AITerminalHttpTransport
 /// </summary>
 public static class AITerminalHttpContent
 {
+    private const int MaximumLineCharacters = 1024 * 1024;
+    private static readonly ConditionalWeakTable<StreamReader, LineState> s_lineStates = new();
+
+    private sealed class LineState
+    {
+        internal readonly char[] Buffer = new char[8192];
+        internal int Offset;
+        internal int Count;
+        internal bool SkipLineFeed;
+        internal int Reading;
+    }
+
     public static string ReadString(HttpContent content, int maximumCharacters, CancellationToken cancellationToken)
     {
         if (content is null)
@@ -788,7 +813,62 @@ public static class AITerminalHttpContent
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        return WaitWithCancellationAsync(reader.ReadLineAsync(), cancellationToken).GetAwaiter().GetResult();
+        return ReadLineCoreAsync(reader, cancellationToken).GetAwaiter().GetResult();
+    }
+
+    private static async Task<string?> ReadLineCoreAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        LineState state = s_lineStates.GetValue(reader, static _ => new LineState());
+        if (Interlocked.Exchange(ref state.Reading, 1) != 0)
+        {
+            throw new InvalidOperationException("同一流读取器不能并发读取行。");
+        }
+
+        try
+        {
+            StringBuilder result = new();
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (state.Offset == state.Count)
+                {
+                    state.Count = await WaitWithCancellationAsync(
+                        reader.ReadAsync(state.Buffer, 0, state.Buffer.Length), cancellationToken).ConfigureAwait(false);
+                    state.Offset = 0;
+                    if (state.Count == 0)
+                    {
+                        s_lineStates.Remove(reader);
+                        return result.Length == 0 ? null : result.ToString();
+                    }
+                }
+
+                char character = state.Buffer[state.Offset++];
+                if (state.SkipLineFeed)
+                {
+                    state.SkipLineFeed = false;
+                    if (character == '\n') { continue; }
+                }
+                if (character is '\r' or '\n')
+                {
+                    state.SkipLineFeed = character == '\r';
+                    return result.ToString();
+                }
+                if (result.Length >= MaximumLineCharacters)
+                {
+                    throw new InvalidDataException("模型流式响应的单行数据超过 1 MiB 字符上限。");
+                }
+                result.Append(character);
+            }
+        }
+        catch
+        {
+            s_lineStates.Remove(reader);
+            throw;
+        }
+        finally
+        {
+            Volatile.Write(ref state.Reading, 0);
+        }
     }
 
     public static Stream ReadStream(HttpContent content, CancellationToken cancellationToken)
@@ -930,7 +1010,8 @@ public static class AITerminalAtomicFile
             try
             {
                 FileStream stream = new(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-                EnsurePrivateFile(lockPath);
+                try { EnsurePrivateFile(lockPath); }
+                catch { stream.Dispose(); throw; }
                 return stream;
             }
             catch (IOException exception)
@@ -1003,15 +1084,18 @@ public static class AITerminalAtomicFile
     {
         if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SddlRevision1, out IntPtr pSecurityDescriptor, out _))
         {
-            return;
+            throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法创建私有访问控制描述符：{fullPath}");
         }
 
         try
         {
-            _ = SetFileSecurityW(
+            if (!SetFileSecurityW(
                 fullPath,
                 DaclSecurityInformation | ProtectedDaclSecurityInformation,
-                pSecurityDescriptor);
+                pSecurityDescriptor))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法设置私有访问控制：{fullPath}");
+            }
         }
         finally
         {

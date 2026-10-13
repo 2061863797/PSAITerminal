@@ -56,7 +56,8 @@ try {
         . ([scriptblock]::Create($line)) | Out-Null
         Assert-Reliability ($script:TestRequests.Count -eq $before -and -not $script:NextPendingInvocationId) '澄清创建了模型请求或待执行调用。'
         $script:Config.mode='AI'
-        Assert-Reliability ((ConvertTo-AISubmittedLine 'Get-Date') -eq 'Get-Date') '合法 Shell 不能被 AI 模式抢走。'
+        Assert-Reliability ((ConvertTo-AISubmittedLine 'Get-Date') -eq '. (Invoke-PSAI)') 'AI 模式的合法 Shell 必须先交给 AI。'
+        Assert-Reliability ($script:LastSubmittedCommand.Command -eq 'Get-Date') 'AI 必须保留合法 Shell 原文。'
         $null=ConvertTo-AIIntentInvocationLine '$x = )'
         $pending=[string]$script:PendingInvocationScripts[$script:NextPendingInvocationId]
         Assert-Reliability ($pending -match '诊断' -and $pending -match 'Start-PSAIRun') '语法错误必须进入诊断任务。'
@@ -122,6 +123,9 @@ try {
         $before=$script:TestRequests.Count
         Assert-Rejected { Start-PSAIRun '无效规划' }
         Assert-Reliability ($script:TestRequests.Count -eq $before+2) '无效规划只能修复一次。'
+        Add-Response $bad; Add-Response (New-Proposal $single)
+        $repaired=Start-PSAIRun '首次无效后修复计划'
+        Assert-Reliability ((Import-AIRun $repaired.RunId).plan.mode -eq 'Single') '无效首次计划不能阻挡合法修正。'
         # 磁盘篡改说明、计划、角色，以及内存篡改命令均不能执行。
         foreach ($field in @('purpose','plan','stepRole','command')) {
             Add-Response (New-Proposal $single); $step=Start-PSAIRun '批准绑定'

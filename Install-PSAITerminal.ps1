@@ -212,7 +212,7 @@ function Get-PSAIProfileUpdate([string]$Content, [AllowNull()][string]$Block) {
 
 function Test-PSAIPackageMatch([string]$Left, [string]$Right) {
     $expectedFiles = @(
-        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'bin/PSAITerminal.dll', 'bin/PSAITerminal.PowerShell7.dll',
+        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'PSAIStorageSafety.ps1', 'bin/PSAITerminal.dll', 'bin/PSAITerminal.PowerShell7.dll',
         'README.md', 'CHANGELOG.md', 'LICENSE', 'Install-PSAITerminal.ps1', 'Uninstall-PSAITerminal.ps1',
         'zh-CN/about_PSAITerminal.help.txt', 'en-US/about_PSAITerminal.help.txt')
     foreach ($relativePath in $expectedFiles) {
@@ -236,6 +236,7 @@ $sourceManifest = Join-Path $PSScriptRoot 'PSAITerminal.psd1'
 $requiredSourceFiles = @(
     $sourceManifest,
     (Join-Path $PSScriptRoot 'PSAITerminal.psm1'),
+    (Join-Path $PSScriptRoot 'PSAIStorageSafety.ps1'),
     (Join-Path $PSScriptRoot 'bin/PSAITerminal.dll'),
     (Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll'),
     (Join-Path $PSScriptRoot 'README.md'),
@@ -264,7 +265,7 @@ if (-not $PSCmdlet.ShouldProcess($destination, "安装 PSAITerminal $moduleVersi
 
 [IO.Directory]::CreateDirectory((Join-Path $stage 'bin')) | Out-Null
 try {
-    foreach ($name in @('PSAITerminal.psd1', 'PSAITerminal.psm1', 'README.md', 'CHANGELOG.md', 'LICENSE',
+    foreach ($name in @('PSAITerminal.psd1', 'PSAITerminal.psm1', 'PSAIStorageSafety.ps1', 'README.md', 'CHANGELOG.md', 'LICENSE',
             'Install-PSAITerminal.ps1', 'Uninstall-PSAITerminal.ps1')) {
         $sourcePath = Join-Path $PSScriptRoot $name
         if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {

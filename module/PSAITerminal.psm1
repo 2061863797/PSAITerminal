@@ -22,6 +22,7 @@
 
 #region 1. 模块初始化、环境检测与全局状态
 Set-StrictMode -Version 3.0
+. (Join-Path $PSScriptRoot 'PSAIStorageSafety.ps1')
 
 $script:ModuleName = 'PSAITerminal'
 $script:HostEdition = if ($PSVersionTable.PSEdition) { [string]$PSVersionTable.PSEdition } else { 'Desktop' }
@@ -63,6 +64,7 @@ $script:PSAIAddToHistoryHandler = $null
 $script:OriginalPSConsoleHostReadLine = $null
 $script:PSAIHostReadLine = $null
 $script:NextReadLineAction = $null
+$script:PendingAIInputBridge = $null
 $script:OriginalPrompt = $null
 $script:PSAIPromptWrapper = $null
 $script:PromptInvocationActive = $false
@@ -217,10 +219,9 @@ function Get-AIText([string]$Key, [object[]]$FormatArguments = @()) {
         'HelpShortcuts' = @{'en-US'='Shortcuts';'zh-CN'='快捷键'}
         'HelpBack' = @{'en-US'='Back';'zh-CN'='返回'}
         'UninstallConfirm' = @{'en-US'='Are you sure you want to uninstall PSAITerminal?';'zh-CN'='确定要卸载 PSAITerminal 吗？'}
-        'UninstallPurgeUserDataPrompt' = @{'en-US'='Also delete configuration, model API keys, and session history?';'zh-CN'='是否同时清除用户配置文件、模型密钥与会话历史？'}
+        'UninstallPurgeUserDataPrompt' = @{'en-US'='Also delete verified configuration, session/Run data, and configured model credentials?';'zh-CN'='是否同时清除已确认的配置、会话/Run 数据和配置模型对应的凭据？'}
         'UninstallProfileRemoved' = @{'en-US'='Removed PSAITerminal integration from PowerShell profile.';'zh-CN'='已从 PowerShell Profile 中移除 PSAITerminal 自动加载。'}
-        'UninstallCleanTaskStarted' = @{'en-US'='Module cleanup task has been scheduled. Please close the current terminal to release file locks and complete removal.';'zh-CN'='模块文件清理任务已就绪。请关闭当前终端以释放文件锁定，完成彻底删除。'}
-        'UninstallExitPrompt' = @{'en-US'='Exit the current terminal session now to complete uninstallation immediately?';'zh-CN'='是否立即退出当前终端以完成卸载？'}
+        'UninstallExitPrompt' = @{'en-US'='Exit the current terminal session now?';'zh-CN'='是否立即退出当前终端？'}
         'UninstallComplete' = @{'en-US'='PSAITerminal has been uninstalled.';'zh-CN'='PSAITerminal 卸载完成。'}
         'LoadedGuide' = @{
             'en-US'="PSAITerminal loaded. / PSAITerminal 已加载。`nType ai to configure a model. / 输入 ai 配置模型。`nF2: AI  F3: PowerShell  F6: mode  F7: explain. / F2：AI  F3：PowerShell  F6：模式  F7：解释。"
@@ -955,9 +956,6 @@ function Initialize-AISessionState {
         $sessionTitle = if ((Get-AILanguage) -eq 'en-US') { 'Terminal Session' } else { '终端会话' }
         $session = New-AISessionObject $sessionTitle
         Save-AISession $session
-        if (-not $script:ConfigLoadFailed) {
-            Invoke-AIConfigMutation { $script:Config.activeSession = [string]$session.id }
-        } else { $script:Config.activeSession = [string]$session.id }
     }
 
     [Environment]::SetEnvironmentVariable($envVarName, [string]$session.id, 'Process')
@@ -1031,7 +1029,6 @@ function New-PSAISession {
     $session = New-AISessionObject $Title
     Save-AISession $session
     if (-not $NoSelect -or -not $script:CurrentSession) {
-        Invoke-AIConfigMutation { $script:Config.activeSession = [string]$session.id }
         $script:CurrentSession = $session
         [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", [string]$session.id, 'Process')
     }
@@ -1047,7 +1044,7 @@ function Get-PSAISession {
     $sessions | Where-Object { $_ } | Sort-Object updatedUtc -Descending | ForEach-Object {
         [pscustomobject]@{
             Id = $_.id; Title = $_.title; CreatedUtc = [datetime]$_.createdUtc; UpdatedUtc = [datetime]$_.updatedUtc
-            TurnCount = @($_.turns).Count; Active = ([string]$_.id -eq [string]$script:Config.activeSession)
+            TurnCount = @($_.turns).Count; Active = ([string]$_.id -eq [string]$script:CurrentSession.id)
             InputTokens = [long]$_.inputTokens; OutputTokens = [long]$_.outputTokens
         }
     }
@@ -1057,14 +1054,14 @@ function Select-PSAISession {
     [CmdletBinding()] param([Parameter(Mandatory)][string]$Id)
     $session = Import-AISession $Id
     if (-not $session) { throw "会话不存在：$Id" }
-    Invoke-AIConfigMutation { $script:Config.activeSession = $Id }
     $script:CurrentSession = $session
     [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", [string]$session.id, 'Process')
     Get-PSAISession -Id $Id
 }
 
 function Clear-PSAISession {
-    [CmdletBinding(SupportsShouldProcess)] param([string]$Id = $script:Config.activeSession)
+    [CmdletBinding(SupportsShouldProcess)] param([string]$Id)
+    if (-not $PSBoundParameters.ContainsKey('Id')) { $Id = [string](Get-PSAIStoredProperty $script:CurrentSession 'id') }
     if (-not $Id) { return }
     $session = Import-AISession $Id
     if (-not $session) { throw "会话不存在：$Id" }
@@ -1079,7 +1076,7 @@ function Clear-PSAISession {
         $latest.outputTokens = 0L
         [void]$latest.Remove('compactedTurnCount')
         Save-AISession $latest -LockHeld
-        if ($Id -eq $script:Config.activeSession) { $script:CurrentSession = $latest }
+        if ($Id -eq $script:CurrentSession.id) { $script:CurrentSession = $latest }
         $msg = if ((Get-AILanguage) -eq 'en-US') { "PSAITerminal session context cleared." } else { "PSAITerminal 会话上下文已清空。" }
         Write-AIColoredHost "✓ $msg" Green
     }
@@ -1160,8 +1157,16 @@ function Get-AICommandRisk([string]$Command) {
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         $resolved = $false
         for ($depth = 0; $depth -lt 8 -and $seen.Add($name); $depth++) {
-            $commandInfo = Get-Command -Name ([WildcardPattern]::Escape($name)) -ErrorAction SilentlyContinue |
+            # 模块会保留导入时的标准别名；顶层执行以宿主的当前重绑定为准。
+            $commandInfo = Get-Alias -Name ([WildcardPattern]::Escape($name)) -Scope Global -ErrorAction SilentlyContinue |
                 Select-Object -First 1
+            if (-not $commandInfo) {
+                $commandInfo = Get-Item -LiteralPath ("Function:\global:" + $name) -ErrorAction SilentlyContinue
+            }
+            if (-not $commandInfo) {
+                $commandInfo = Get-Command -Name ([WildcardPattern]::Escape($name)) -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+            }
             if (-not $commandInfo) { return [PSAITerminal.AITerminalRisk]::High }
             if ($commandInfo.CommandType -eq [Management.Automation.CommandTypes]::Alias) {
                 $resolvedName = if ($commandInfo.ResolvedCommand) {
@@ -1937,15 +1942,17 @@ function Invoke-AIModelText {
     }
 
     $text = [Text.StringBuilder]::new()
+    $toolProposalText = if ($EnableTools) { [Text.StringBuilder]::new() } else { $null }
     $parsed = 0
     $responseState = [ordered]@{Terminal=$false;InputTokens=0L;OutputTokens=0L}
     $first = $true
     $toolCalls = [ordered]@{}
     $toolItemMap = @{}
     $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
-    $reader = [IO.StreamReader]::new(
-        [PSAITerminal.AITerminalHttpContent]::ReadStream($response.Content, $requestToken))
+    $reader = $null
     try {
+        $reader = [IO.StreamReader]::new(
+            [PSAITerminal.AITerminalHttpContent]::ReadStream($response.Content, $requestToken))
         Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken | ForEach-Object {
             $payload = [string]$_
             if (-not $payload) { return }
@@ -2071,6 +2078,11 @@ function Invoke-AIModelText {
                 }
             }
             if ($delta) {
+                # 工具正文按原文校验；显示清洗不能悄悄改变待执行命令。
+                if ($null -ne $toolProposalText) {
+                    if ($toolProposalText.Length + ([string]$delta).Length -gt 1MB) { throw '模型工具正文超过 1 MiB 上限。' }
+                    [void]$toolProposalText.Append([string]$delta)
+                }
                 $safeDelta = $sanitizer.Sanitize([string]$delta)
                 if ($text.Length + $safeDelta.Length -gt 1MB) { throw '模型文本响应超过 1 MiB 上限。' }
                 [void]$text.Append($safeDelta)
@@ -2084,7 +2096,8 @@ function Invoke-AIModelText {
         }
         if (-not $NoRender -and -not $first) { Write-Host '' }
     } finally {
-        $reader.Dispose(); $response.Dispose(); $request.Dispose(); $client.Dispose(); $linkedSource.Dispose(); $timeoutSource.Dispose(); $secret=$null
+        if ($reader) { $reader.Dispose() }
+        $response.Dispose(); $request.Dispose(); $client.Dispose(); $linkedSource.Dispose(); $timeoutSource.Dispose(); $secret=$null
     }
     if ($parsed -eq 0) { throw '模型流式响应中没有可解析的数据。' }
     if (-not $responseState.Terminal) {
@@ -2096,7 +2109,7 @@ function Invoke-AIModelText {
         }
     }
     if ($text.Length -eq 0 -and $toolCalls.Count -eq 0) { throw '模型没有返回文本或工具调用。' }
-    [pscustomobject]@{Text=$text.ToString();ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
+    [pscustomobject]@{Text=$text.ToString();ToolProposalText=$(if($null -ne $toolProposalText){$toolProposalText.ToString()}else{$null});ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
 }
 #endregion
 
@@ -2477,11 +2490,11 @@ function Open-AIUninstallMenu {
     }
     $purge = Read-AIYesNo (Get-AIText 'UninstallPurgeUserDataPrompt') $false
 
-    $null = Uninstall-PSAITerminal -PurgeUserData:$purge -Force
+    $result = Uninstall-PSAITerminal -PurgeUserData:$purge -Force
+    if (-not $result) { return $false }
     Write-Host ''
     Write-AIColoredHost (Get-AIText 'UninstallComplete') Green
-    Write-Host (Get-AIText 'UninstallProfileRemoved')
-    Write-Host (Get-AIText 'UninstallCleanTaskStarted')
+    if ($result.ProfileCleaned) { Write-Host (Get-AIText 'UninstallProfileRemoved') }
 
     if (Read-AIYesNo (Get-AIText 'UninstallExitPrompt') $true) {
         exit
@@ -2975,6 +2988,7 @@ function Revoke-AIProposalApproval([Collections.IDictionary]$Run, [Collections.I
 
 function ConvertTo-AIValidatedPlan($Plan) {
     if ($Plan -isnot [Collections.IDictionary]) { throw '结构化计划无效。' }
+    if ($Plan['mode'] -cnotin @('Single','Multi')) { throw '结构化计划模式无效。' }
     $planSteps = $Plan['steps']
     $planCompletion = $Plan['completionCondition']
     if ($planSteps -isnot [Collections.IList] -or $planSteps.Count -lt 1 -or $planSteps.Count -gt 100 -or
@@ -3011,9 +3025,17 @@ function ConvertFrom-AIToolCall($Call, [switch]$Legacy) {
         try { $arguments = ConvertFrom-AIJson ([string]$arguments) }
         catch { throw 'PowerShell 工具参数不是有效 JSON。' }
     }
+    if ($arguments -isnot [Collections.IDictionary]) { throw 'PowerShell 工具参数必须是对象。' }
+    $rawCommand = $arguments['command']
+    if ($rawCommand -isnot [string] -or [string]::IsNullOrWhiteSpace($rawCommand) -or $rawCommand.Length -gt 16384) {
+        throw 'PowerShell 命令必须是非空字符串且不能超过 16384 个字符。'
+    }
+    if ((Protect-AIText $rawCommand -1) -cne $rawCommand) {
+        throw '命令包含需要脱敏的敏感值或控制字符，不能改写后执行；请使用变量或凭据引用。'
+    }
     foreach ($field in @('purpose','command','expectedOutcome','sideEffects','rollbackHint')) {
         if ($arguments[$field] -isnot [string] -or [string]::IsNullOrWhiteSpace($arguments[$field])) { throw "PowerShell 工具参数缺少 $field。" }
-        $arguments[$field] = Protect-AIText ([string]$arguments[$field]) $(if ($field -eq 'command') { 16384 } else { 4096 })
+        if ($field -ne 'command') { $arguments[$field] = Protect-AIText ([string]$arguments[$field]) 4096 }
     }
     $tokens=$null; $parseErrors=$null
     $ast = [Management.Automation.Language.Parser]::ParseInput([string]$arguments.command,[ref]$tokens,[ref]$parseErrors)
@@ -3029,23 +3051,16 @@ function ConvertFrom-AIToolCall($Call, [switch]$Legacy) {
         sideEffects = $arguments.sideEffects; rollbackHint = $arguments.rollbackHint
     }
     if (-not $Legacy) {
-        $rawPlan = $arguments['plan']
-        $rawSteps = if ($rawPlan -is [Collections.IDictionary]) { $rawPlan['steps'] } else { $null }
-        if ($rawPlan -isnot [Collections.IDictionary] -or $null -eq $rawSteps) {
-            $arguments['plan'] = [ordered]@{
-                mode = 'Single'
-                steps = @([string]$arguments['purpose'])
-                completionCondition = if ($arguments['expectedOutcome']) { [string]$arguments['expectedOutcome'] } else { '命令执行成功且无报错' }
+        foreach ($field in @('plan','stepIndex','stepRole','afterSuccess')) {
+            if (-not (Test-AIMapContains $arguments $field) -or $null -eq $arguments[$field]) {
+                throw "PowerShell 工具参数缺少 $field。"
             }
-            if ($null -eq $arguments['stepIndex']) { $arguments['stepIndex'] = 1 }
-            if ($null -eq $arguments['stepRole']) { $arguments['stepRole'] = 'Operation' }
-            if ($null -eq $arguments['afterSuccess']) { $arguments['afterSuccess'] = 'Complete' }
         }
         $proposal.plan = ConvertTo-AIValidatedPlan $arguments['plan']
-        $rawStepIndex = if ($null -ne $arguments['stepIndex']) { $arguments['stepIndex'] } else { 1 }
+        $rawStepIndex = $arguments['stepIndex']
         Assert-AIIntegerValue $rawStepIndex 1 $proposal.plan.steps.Count '工具计划步骤'
-        $rawStepRole = if ($null -ne $arguments['stepRole']) { [string]$arguments['stepRole'] } else { 'Operation' }
-        $rawAfterSuccess = if ($null -ne $arguments['afterSuccess']) { [string]$arguments['afterSuccess'] } else { 'Complete' }
+        $rawStepRole = [string]$arguments['stepRole']
+        $rawAfterSuccess = [string]$arguments['afterSuccess']
         $normalizedRole = switch -Regex ($rawStepRole) {
             '(?i)^Operation$' { 'Operation' }
             '(?i)^Verify$'    { 'Verify' }
@@ -3081,24 +3096,15 @@ function Find-AITextToolCall([string]$Text) {
                 if ($obj -is [Collections.IDictionary]) {
                     $objName = [string]$obj['name']
                     $objArgs = $obj['arguments']
-                    $objCommand = [string]$obj['command']
-                    $objPurpose = [string]$obj['purpose']
 
-                    if ($objName -eq 'powershell' -and $null -ne $objArgs) {
-                        $argsObj = if ($objArgs -is [string]) { ConvertFrom-AIJson $objArgs } else { $objArgs }
-                        if ($argsObj -is [Collections.IDictionary]) {
-                            $argCmd = [string]$argsObj['command']
-                            $argPurp = [string]$argsObj['purpose']
-                            if (-not [string]::IsNullOrWhiteSpace($argCmd) -and -not [string]::IsNullOrWhiteSpace($argPurp)) {
-                                $callId = [string]$obj['id']
-                                $toolCall = [ordered]@{
-                                    id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
-                                    name = 'powershell'
-                                    arguments = $argsObj
-                                }
-                            }
+                    if ($objName -eq 'powershell') {
+                        $callId = [string]$obj['id']
+                        $toolCall = [ordered]@{
+                            id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
+                            name = 'powershell'
+                            arguments = $objArgs
                         }
-                    } elseif (-not [string]::IsNullOrWhiteSpace($objCommand) -and -not [string]::IsNullOrWhiteSpace($objPurpose)) {
+                    } elseif ((Test-AIMapContains $obj 'command') -or (Test-AIMapContains $obj 'purpose')) {
                         $callId = [string]$obj['id']
                         $toolCall = [ordered]@{
                             id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
@@ -3149,24 +3155,15 @@ function Find-AITextToolCall([string]$Text) {
                 if ($obj -is [Collections.IDictionary]) {
                     $objName = [string]$obj['name']
                     $objArgs = $obj['arguments']
-                    $objCommand = [string]$obj['command']
-                    $objPurpose = [string]$obj['purpose']
 
-                    if ($objName -eq 'powershell' -and $null -ne $objArgs) {
-                        $argsObj = if ($objArgs -is [string]) { ConvertFrom-AIJson $objArgs } else { $objArgs }
-                        if ($argsObj -is [Collections.IDictionary]) {
-                            $argCmd = [string]$argsObj['command']
-                            $argPurp = [string]$argsObj['purpose']
-                            if (-not [string]::IsNullOrWhiteSpace($argCmd) -and -not [string]::IsNullOrWhiteSpace($argPurp)) {
-                                $callId = [string]$obj['id']
-                                $toolCall = [ordered]@{
-                                    id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
-                                    name = 'powershell'
-                                    arguments = $argsObj
-                                }
-                            }
+                    if ($objName -eq 'powershell') {
+                        $callId = [string]$obj['id']
+                        $toolCall = [ordered]@{
+                            id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
+                            name = 'powershell'
+                            arguments = $objArgs
                         }
-                    } elseif (-not [string]::IsNullOrWhiteSpace($objCommand) -and -not [string]::IsNullOrWhiteSpace($objPurpose)) {
+                    } elseif ((Test-AIMapContains $obj 'command') -or (Test-AIMapContains $obj 'purpose')) {
                         $callId = [string]$obj['id']
                         $toolCall = [ordered]@{
                             id = if (-not [string]::IsNullOrWhiteSpace($callId)) { $callId } else { [guid]::NewGuid().ToString('N') }
@@ -3192,11 +3189,11 @@ function Find-AITextToolCall([string]$Text) {
     }
 
     # 3. 备选：若模型以 YAML / Markdown 键值列表格式输出参数（如 - purpose: ..., - command: ...）
-    if ($Text -match '(?mi)^\s*[-*]?\s*command\s*:\s*(`{1,3})?([^\r\n`]+)\1?' -and
+    if ($Text -match '(?mi)^\s*[-*]?\s*command\s*:\s*(`{1,3})?([^\r\n`]+)\1?' -or
         $Text -match '(?mi)^\s*[-*]?\s*purpose\s*:\s*([^\r\n]+)') {
         try {
             $cmd = $null; $purp = $null; $exp = $null; $side = $null; $roll = $null
-            $mode = 'Single'; $steps = $null; $cond = $null; $idx = 1; $role = 'Operation'; $after = 'Complete'
+            $mode = $null; $steps = $null; $cond = $null; $idx = $null; $role = $null; $after = $null
 
             if ($Text -match '(?mi)^\s*[-*]?\s*command\s*:\s*(`{1,3})?([^\r\n`]+)\1?') { $cmd = $Matches[2].Trim() }
             if ($Text -match '(?mi)^\s*[-*]?\s*purpose\s*:\s*([^\r\n]+)') { $purp = $Matches[1].Trim() }
@@ -3205,7 +3202,10 @@ function Find-AITextToolCall([string]$Text) {
             if ($Text -match '(?mi)^\s*[-*]?\s*rollbackHint\s*:\s*([^\r\n]+)') { $roll = $Matches[1].Trim() }
             if ($Text -match '(?mi)^\s*[-*]?\s*mode\s*:\s*(\w+)') { $mode = $Matches[1].Trim() }
             if ($Text -match '(?mi)^\s*[-*]?\s*completionCondition\s*:\s*([^\r\n]+)') { $cond = $Matches[1].Trim() }
-            if ($Text -match '(?mi)^\s*[-*]?\s*stepIndex\s*:\s*(\d+)') { $idx = [int]$Matches[1] }
+            if ($Text -match '(?mi)^\s*[-*]?\s*stepIndex\s*:\s*([^\r\n]+)') {
+                $idx = $Matches[1].Trim(); $parsedIndex = 0
+                if ([int]::TryParse($idx, [ref]$parsedIndex)) { $idx = $parsedIndex }
+            }
             if ($Text -match '(?mi)^\s*[-*]?\s*stepRole\s*:\s*(\w+)') { $role = $Matches[1].Trim() }
             if ($Text -match '(?mi)^\s*[-*]?\s*afterSuccess\s*:\s*(\w+)') { $after = $Matches[1].Trim() }
             if ($Text -match '(?si)^\s*[-*]?\s*steps\s*:\s*\[(.*?)\]') {
@@ -3220,17 +3220,17 @@ function Find-AITextToolCall([string]$Text) {
                 }
             }
 
-            if (-not [string]::IsNullOrWhiteSpace($cmd) -and -not [string]::IsNullOrWhiteSpace($purp)) {
+            if (-not [string]::IsNullOrWhiteSpace($cmd) -or -not [string]::IsNullOrWhiteSpace($purp)) {
                 $argsObj = [ordered]@{
                     purpose = $purp
                     command = $cmd
-                    expectedOutcome = if ($exp) { $exp } else { '命令执行成功' }
-                    sideEffects = if ($side) { $side } else { '无' }
-                    rollbackHint = if ($roll) { $roll } else { '无需回滚' }
+                    expectedOutcome = $exp
+                    sideEffects = $side
+                    rollbackHint = $roll
                     plan = [ordered]@{
-                        mode = if ($steps -and $steps.Count -gt 1) { 'Multi' } else { $mode }
-                        steps = if ($steps) { $steps } else { @($purp) }
-                        completionCondition = if ($cond) { $cond } else { '命令正常完成' }
+                        mode = $mode
+                        steps = $steps
+                        completionCondition = $cond
                     }
                     stepIndex = $idx
                     stepRole = $role
@@ -3284,7 +3284,9 @@ function Update-AIProposalExplanation([Collections.IDictionary]$Run, [Collection
         $response = Invoke-AISessionModel $model $instruction -NoRender -CancellationToken $CancellationToken
         Update-AISessionUsage ([long]$response.InputTokens) ([long]$response.OutputTokens)
         if (@($response.ToolCalls).Count) { throw '说明请求不能包含工具调用。' }
-        $description = ConvertFrom-AIJson ([string]$response.Text)
+        $jsonText = [string]$response.Text
+        if ($jsonText -match '\A\s*```(?:json)?\s*\r?\n(?<Json>[\s\S]*?)\r?\n```\s*\z') { $jsonText = $Matches.Json }
+        $description = ConvertFrom-AIJson $jsonText
         if ($description -isnot [Collections.IDictionary] -or $description.Count -ne 4) { throw '说明必须包含四个字段。' }
         Assert-AIProposalExplanation $description
         foreach ($field in @('purpose','expectedOutcome','sideEffects','rollbackHint')) {
@@ -3398,9 +3400,11 @@ stepIndex 为当前计划序号；正常步骤角色 Operation/Verify，恢复�
     $usagePersisted = $false
     $calls = @($response.ToolCalls)
     $displayText = $response.Text
+    $proposalBody = Get-AIProperty $response 'ToolProposalText'
+    if ($null -eq $proposalBody) { $proposalBody = $displayText }
     $extracted = $null
-    if ($calls.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace($displayText)) {
-        $extracted = Find-AITextToolCall $displayText
+    if ($calls.Count -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$proposalBody)) {
+        $extracted = Find-AITextToolCall ([string]$proposalBody)
         if ($extracted) {
             $calls = @($extracted.ToolCall)
             $displayText = $extracted.CleanedText
@@ -3411,9 +3415,9 @@ stepIndex 为当前计划序号；正常步骤角色 Operation/Verify，恢复�
             $displayText
         } elseif ($extracted) {
             if ((Get-AILanguage) -eq 'en-US') {
-                "Proposed command: $($extracted.ToolCall.arguments.command) (Purpose: $($extracted.ToolCall.arguments.purpose))"
+                'A tool proposal was received and awaits local validation.'
             } else {
-                "提议执行命令：$($extracted.ToolCall.arguments.command)（目的：$($extracted.ToolCall.arguments.purpose)）"
+                '已收到工具提议，待本地校验。'
             }
         } else {
             $response.Text
@@ -3435,9 +3439,9 @@ stepIndex 为当前计划序号；正常步骤角色 Operation/Verify，恢复�
     try {
         if ($calls.Count -ne 1) { throw '每一步只能调用一个工具。' }
         $proposal = ConvertFrom-AIToolCall $calls[0]
-        if (-not $Run.plan) { $Run.plan = $proposal.plan }
         Assert-AIPlanStep $Run $proposal
         if ($Run.phase -ne 'Normal' -and [string]::IsNullOrWhiteSpace($response.Text)) { throw '失败恢复必须先解释原因。' }
+        if (-not $Run.plan) { $Run.plan = $proposal.plan }
     } catch {
         if (-not $usagePersisted) { Update-AISessionUsage ([long]$response.InputTokens) ([long]$response.OutputTokens) }
         if ($RepairAttempt -lt 1) { return Invoke-AIHarnessModelStep $Run $CancellationToken $_.Exception.Message ($RepairAttempt + 1) }
@@ -3820,21 +3824,18 @@ function ConvertTo-AIAutoShellLine([string]$Text) {
     $initialErrorCount = "__PSAI_${suffix}_InitialErrorCount"
     $previousNativePref = "__PSAI_${suffix}_PrevNativePref"
     $previousExitCode = "__PSAI_${suffix}_PrevExitCode"
-    $fallback = New-AITopLevelHarnessScript "Start-PSAIAutoFallback -Command '$escaped' -ErrorRecord `$$errorRecord"
+    $exitCodeAvailable = "__PSAI_${suffix}_ExitCodeAvailable"
+    $fallback = New-AITopLevelHarnessScript "Start-PSAIAutoFallback -Command '$escaped' -ErrorRecord `$$errorRecord -ExitCode `$$previousExitCode"
     @"
 `$$success = `$false
 `$$errorRecord = `$null
 `$$initialErrorCount = `$Error.Count
 `$$previousNativePref = `$null
 `$$previousExitCode = `$null
+`$$exitCodeAvailable = `$false
 if (`$PSVersionTable.PSVersion -ge [version]'7.3') {
     `$$previousNativePref = [bool]`$PSNativeCommandUseErrorActionPreference
     `$PSNativeCommandUseErrorActionPreference = `$true
-} else {
-    if (`$null -ne (Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue)) {
-        `$$previousExitCode = [int](Get-Variable LASTEXITCODE -Scope Global).Value
-    }
-    `$global:LASTEXITCODE = 0
 }
 try {
 $Text
@@ -3853,19 +3854,22 @@ if (-not `$$success) {
 `$$success = `$false
 Write-Error -ErrorRecord `$_ -ErrorAction Continue
 } finally {
+`$$exitCodeAvailable = `$null -ne (Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue)
+if (`$$exitCodeAvailable) { `$$previousExitCode = (Get-Variable LASTEXITCODE -Scope Global).Value }
 if (`$PSVersionTable.PSVersion -ge [version]'7.3') {
     `$PSNativeCommandUseErrorActionPreference = [bool]`$$previousNativePref
-} elseif (`$null -ne `$$previousExitCode) {
-    `$global:LASTEXITCODE = [int]`$$previousExitCode
-} else {
-    Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
 }
 }
-Invoke-PSAIAutoCompletion -Command '$escaped' -Succeeded:([bool]`$$success) -ErrorRecord `$$errorRecord
+try {
+Invoke-PSAIAutoCompletion -Command '$escaped' -Succeeded:([bool]`$$success) -ErrorRecord `$$errorRecord -ExitCode `$$previousExitCode
 if (-not `$$success) {
 $fallback
 }
-Remove-Variable -Name '$success','$errorRecord','$initialErrorCount','$previousNativePref','$previousExitCode' -Scope 0 -ErrorAction SilentlyContinue
+} finally {
+if (`$$exitCodeAvailable) { `$global:LASTEXITCODE = `$$previousExitCode }
+else { Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
+Remove-Variable -Name '$success','$errorRecord','$initialErrorCount','$previousNativePref','$previousExitCode','$exitCodeAvailable' -Scope 0 -ErrorAction SilentlyContinue
+}
 "@
 }
 
@@ -3898,7 +3902,8 @@ function Invoke-PSAIAutoCompletion {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][string]$Command,
         [Parameter(Mandatory)][bool]$Succeeded,
-        [AllowNull()]$ErrorRecord
+        [AllowNull()]$ErrorRecord,
+        [Nullable[int]]$ExitCode
     )
     $script:LastCommandResult = [pscustomobject]@{
         Command = $Command
@@ -3906,6 +3911,7 @@ function Invoke-PSAIAutoCompletion {
         Output = $null
         Error = if ($Succeeded) { $null } else { Protect-AIText ($ErrorRecord | Out-String) 8192 }
         Source = 'Shell'
+        ExitCode = $ExitCode
         CompletedUtc = [DateTime]::UtcNow
     }
 }
@@ -3913,7 +3919,8 @@ function Invoke-PSAIAutoCompletion {
 function Start-PSAIAutoFallback {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][string]$Command,
-        [AllowNull()]$ErrorRecord
+        [AllowNull()]$ErrorRecord,
+        [Nullable[int]]$ExitCode
     )
     $safeCommand = Protect-AIText $Command 4096
     $safeError = Protect-AIText ($ErrorRecord | Out-String) 8192
@@ -3925,7 +3932,7 @@ function Start-PSAIAutoFallback {
         "刚才在本地 PowerShell 终端中执行的命令失败了：`n失败命令：$safeCommand`n实际错误：$safeError`n`n先解释失败根因并评估可能副作用，再按结构化计划提出待批准的 Cleanup 或 Retry 步骤，提供目的、命令、预期、副作用和回滚建议。风险由本地计算，不保证恢复成功。"
     }
 
-    Start-PSAIRun -Task $task -Failure ([ordered]@{task=$task;command=$safeCommand;output=$safeError;succeeded=$false;exitCode=$null})
+    Start-PSAIRun -Task $task -Failure ([ordered]@{task=$task;command=$safeCommand;output=$safeError;succeeded=$false;exitCode=$ExitCode})
 }
 #endregion
 
@@ -3958,11 +3965,12 @@ function Test-AIAutoRoute([string]$Line) {
 function ConvertTo-AIIntentInvocationLine([string]$Line, [switch]$ExplicitAI) {
     $tokens=$null; $parseErrors=$null
     [void][Management.Automation.Language.Parser]::ParseInput($Line, [ref]$tokens, [ref]$parseErrors)
-    if (@($parseErrors).Count -gt 0 -and $Line -match '[-$|{}\\/]|^\s*(?:Get|Set|New|Remove|Start|Stop|git|docker|npm|kubectl)\b') {
+    $intent = [PSAITerminal.AITerminalInputRouter]::ClassifyIntent($Line)
+    if ($intent -ne 'Consultation' -and @($parseErrors).Count -gt 0 -and $Line -match '[-$|{}\\/]|^\s*(?:Get|Set|New|Remove|Start|Stop|git|docker|npm|kubectl)\b') {
         $task = "诊断以下代码的语法错误：`n$Line`n解析错误：$(@($parseErrors | ForEach-Object Message) -join '; ')`n先解释根因，再按结构化计划提出修复命令。"
         return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $task -Agent)
     }
-    switch ([PSAITerminal.AITerminalInputRouter]::ClassifyIntent($Line)) {
+    switch ($intent) {
         'Consultation' { return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line) }
         'Operation' { return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent) }
         default {
@@ -3985,8 +3993,7 @@ function ConvertTo-AIIntentInvocationLine([string]$Line, [switch]$ExplicitAI) {
 function ConvertTo-AISubmittedLine([string]$Line) {
     $action = [string]$script:NextReadLineAction
     $script:NextReadLineAction = $null
-    if ($action -eq 'ForceShell' -or [string]::IsNullOrWhiteSpace($Line) -or
-        [PSAITerminal.AITerminalInputRouter]::IsIncomplete($Line)) { return $Line }
+    if ($action -eq 'ForceShell' -or [string]::IsNullOrWhiteSpace($Line)) { return $Line }
 
     $trimmed = $Line.Trim()
     if ($trimmed -match '^(?i:ai)$') { return 'Open-PSAISettings' }
@@ -4021,6 +4028,8 @@ function ConvertTo-AISubmittedLine([string]$Line) {
     }
 
     Set-AILastSubmittedCommand $Line
+    if ($script:Config.mode -eq 'AI') { return ConvertTo-AIIntentInvocationLine $Line -ExplicitAI }
+    if ([PSAITerminal.AITerminalInputRouter]::IsIncomplete($Line)) { return $Line }
     if ($script:Config.mode -in @('AI','Auto') -and (Test-AIAutoRoute $Line)) {
         return ConvertTo-AIIntentInvocationLine $Line
     }
@@ -4031,6 +4040,19 @@ function ConvertTo-AISubmittedLine([string]$Line) {
 }
 
 function Invoke-AIEnterHandler {
+    param([switch]$ForceAI)
+    $line = Get-AICurrentBuffer
+    if ($line -and ($ForceAI -or $script:Config.mode -eq 'AI') -and
+        [PSAITerminal.AITerminalInputRouter]::IsIncomplete($line)) {
+        # 注释只用于通过原生编辑器的续行判定，原文由宿主读取层消费一次。
+        $bridge = (@($line -split '\r\n|\n|\r' | ForEach-Object { '# ' + $_ }) -join "`n")
+        $script:PendingAIInputBridge = @{Original=$line;Submitted=$bridge}
+        Set-AILastSubmittedCommand $line
+        [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($line)
+        [void]$script:InternalHistoryLines.Add($bridge)
+        Set-AICurrentBuffer $bridge
+        $script:NextReadLineAction = 'ForceAI'
+    }
     [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
 }
 
@@ -4040,7 +4062,14 @@ function Invoke-AIHostReadLine([bool]$LastRunStatus) {
     }
     if ($LastRunStatus) { $null = $true }
     else { Write-Error 'PSAITerminal input status preservation' -ErrorAction Ignore }
-    $line = & $script:OriginalPSConsoleHostReadLine
+    try { $line = & $script:OriginalPSConsoleHostReadLine }
+    catch { $script:PendingAIInputBridge=$null; $script:NextReadLineAction=$null; throw }
+    $bridge = $script:PendingAIInputBridge
+    $script:PendingAIInputBridge = $null
+    if ($bridge) {
+        if ($line -ceq $bridge.Submitted) { $line = $bridge.Original }
+        else { $script:NextReadLineAction=$null; [void]$script:InternalHistoryLines.Remove($bridge.Submitted) }
+    }
     ConvertTo-AISubmittedLine $line
 }
 
@@ -4138,7 +4167,7 @@ if (-not $module) { throw 'PSAITerminal 输入路由的活动模块实例不存�
             Set-AILastSubmittedCommand $line
             $script:NextReadLineAction = 'ForceAI'
         }
-        [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        Invoke-AIEnterHandler -ForceAI
     } @('SwitchPredictionView') -Force:$Force)
     [void](Set-AIPSAIKeyHandler $script:Config.shortcuts.forceShell 'PSAIForceShell' {
         $line = Get-AICurrentBuffer
@@ -4496,68 +4525,71 @@ function Uninstall-PSAITerminal {
         }
     }
 
-    if (-not $Force -and -not $PSCmdlet.ShouldProcess($normalizedPath, '卸载 PSAITerminal 模块')) {
-        return
+    Assert-PSAIModuleRemoval $normalizedPath
+    $purgeConfig = if ($env:PSAI_CONFIG_HOME) { $env:PSAI_CONFIG_HOME } else { Get-AIConfigDirectory }
+    $purgeData = if ($env:PSAI_DATA_HOME) { $env:PSAI_DATA_HOME } else { Get-AIDataDirectory }
+    Assert-PSAIStorageOutsideModule $normalizedPath @($purgeConfig,$purgeData)
+    $purgePlan = $null
+    if ($PurgeUserData) {
+        $purgePlan = Get-PSAIStoragePurgePlan $purgeConfig $purgeData
     }
-
-    Unregister-AIPSReadLineIntegration
-    Unregister-AIPromptIntegration
-    if ($script:OfficialIntegrationAvailable) {
-        [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll()
-    }
-    [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", $null, 'Process')
-
-    $profileRemoved = $false
+    $profileUpdates = [Collections.Generic.List[object]]::new()
     $profilesToCheck = @($PROFILE.CurrentUserCurrentHost)
     if ($PROFILE.CurrentUserAllHosts -and $PROFILE.CurrentUserAllHosts -ne $PROFILE.CurrentUserCurrentHost) {
         $profilesToCheck += $PROFILE.CurrentUserAllHosts
     }
     foreach ($prof in $profilesToCheck) {
         if ($prof -and (Test-Path -LiteralPath $prof -PathType Leaf)) {
+            [void](Assert-PSAISafeRemovalDirectory (Split-Path -Parent $prof))
+            if ((Get-Item -LiteralPath $prof -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw '拒绝修改重解析点 Profile。'
+            }
             $content = Read-AITextFile $prof
             $updated = (Get-AIProfileUpdate $content $null).Content
             if ($updated -ne $content) {
-                [PSAITerminal.AITerminalAtomicFile]::WriteAllText($prof, $updated)
-                $profileRemoved = $true
+                $profileUpdates.Add([pscustomobject]@{Path=$prof;Original=$content;Updated=$updated})
             }
         }
     }
-
-    $userDataPurged = $false
+    if ($Force -and -not $PSBoundParameters.ContainsKey('Confirm')) { $ConfirmPreference = 'None' }
+    if (-not $PSCmdlet.ShouldProcess($normalizedPath, '卸载 PSAITerminal 模块')) { return }
+    $userDataPurged = $false; $credentialsPurged = $false
     if ($PurgeUserData) {
-        $configDir = Get-AIConfigDirectory
-        $dataDir = Get-AIDataDirectory
-        if ($configDir -and (Test-Path -LiteralPath $configDir)) {
-            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
-            $userDataPurged = $true
-        }
-        if ($dataDir -and (Test-Path -LiteralPath $dataDir)) {
-            Remove-Item -LiteralPath $dataDir -Recurse -Force -ErrorAction SilentlyContinue
-            $userDataPurged = $true
-        }
+        Assert-PSAIStoragePurgePlan $purgePlan
+        Invoke-PSAICredentialPurge $purgePlan.CredentialTargets (Join-Path $normalizedPath 'bin\PSAITerminal.dll')
+        $credentialsPurged = $true
+        $script:SessionSecrets.Clear()
+        $script:SecretMaskingCache.Clear()
+        $script:SecretMaskingCacheInitialized = $true
+        Remove-PSAIStorageData $purgePlan
+        $userDataPurged = $true
     }
-
-    try {
-        Get-ChildItem -LiteralPath $normalizedPath -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -ne 'PSAITerminal.dll' } |
-            Remove-Item -Force -ErrorAction SilentlyContinue
-    } catch {
-        Write-Verbose '卸载清理初始尝试失败，将由后台清理脚本重试。'
+    $profileRemoved = $false
+    foreach ($update in $profileUpdates) {
+        if ((Read-AITextFile $update.Path) -cne $update.Original) { throw 'Profile 在预检后已变化，停止卸载。' }
+        [PSAITerminal.AITerminalAtomicFile]::WriteAllText($update.Path, $update.Updated)
+        $profileRemoved = $true
     }
-
-    $escapedTarget = $normalizedPath.Replace("'", "''")
-    $cleanerScript = "`$target = '$escapedTarget'; for (`$i = 0; `$i -lt 60; `$i++) { try { if (Test-Path -LiteralPath `$target) { Remove-Item -LiteralPath `$target -Recurse -Force -ErrorAction Stop } break } catch { Start-Sleep -Milliseconds 500 } }"
-    $cleanerExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+    Unregister-AIPSReadLineIntegration
+    Unregister-AIPromptIntegration
+    if ($script:OfficialIntegrationAvailable) { [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll() }
+    [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", $null, 'Process')
+    Assert-PSAIModuleRemoval $normalizedPath
     try {
-        Start-Process -FilePath $cleanerExe -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', $cleanerScript) -ErrorAction SilentlyContinue
+        # 先尝试程序集，文件仍被当前宿主占用时保留清单与独立卸载脚本供重试。
+        Get-ChildItem -LiteralPath $normalizedPath -Filter '*.dll' -Recurse -File -ErrorAction Stop |
+            Remove-Item -Force -ErrorAction Stop
+        Remove-Item -LiteralPath $normalizedPath -Recurse -Force -ErrorAction Stop
     } catch {
-        Write-Verbose '无法启动后台清理脚本。'
+        throw "模块文件删除失败：$($_.Exception.Message) 请关闭使用该模块的终端，再在无 Profile 的终端执行独立卸载脚本。"
     }
 
     $result = [pscustomobject]@{
         RemovedPath = $normalizedPath
         ProfileCleaned = $profileRemoved
         UserDataPurged = $userDataPurged
+        CredentialsPurged = $credentialsPurged
+        ModuleRemoved = (-not (Test-Path -LiteralPath $normalizedPath))
     }
 
     if ($ExitTerminal) {
@@ -4593,11 +4625,6 @@ if (-not $script:ConfigLoadFailed -and -not [bool]$script:Config.onboardingShown
     -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
     Write-AIColoredHost (Get-AIText 'LoadedGuide') DarkCyan
     $script:Config.onboardingShown = $true
-    try { Save-AIConfig }
-    catch {
-        $script:Config.onboardingShown = $false
-        Write-Warning "无法保存首次使用状态：$($_.Exception.Message)"
-    }
 }
 $ExecutionContext.SessionState.Module.OnRemove = {
     Unregister-AIPSReadLineIntegration

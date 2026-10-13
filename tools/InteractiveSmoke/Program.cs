@@ -118,6 +118,11 @@ try
 
     if (!useProfile)
     {
+        // 合成模型只返回内存响应，用真实按键验证路由，不连接在线服务。
+        string modelName = "conpty-" + Guid.NewGuid().ToString("N");
+        terminal.Send($"New-PSAIModel -Name '{modelName}' -Protocol Ollama -Endpoint http://127.0.0.1:1 -ModelId fixture|Out-Null;Select-PSAIModel '{modelName}'|Out-Null;& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {{$script:ConptyOriginal=(Get-Command Invoke-AISessionModel).ScriptBlock;$script:ConptyCount=0;$script:ConptyChoices=$true;function script:Read-Host {{param($Prompt) if($script:ConptyChoices){{''}}else{{Microsoft.PowerShell.Utility\\Read-Host $Prompt}}}};function script:Invoke-AISessionModel {{param($Model,$Instruction,[switch]$EnableTools,[switch]$NoRender,$CancellationToken) [void]$Model;[void]$NoRender;[void]$CancellationToken;$script:ConptyCount++;$script:ConptyInstruction=$Instruction;$calls=@();if($EnableTools){{$cmd=\"Write-Output '__PSAI_FIXTURE_RESULT_$($script:ConptyCount)__'\";$calls=@(@{{name='powershell';arguments=@{{purpose='fixture';command=$cmd;expectedOutcome='fixture';sideEffects='fixture';rollbackHint='fixture';plan=@{{mode='Single';steps=@('fixture');completionCondition='fixture'}};stepIndex=1;stepRole='Operation';afterSuccess='Complete'}}}})}};[pscustomobject]@{{Text='fixture-consultation';ToolCalls=$calls;InputTokens=0L;OutputTokens=0L}}}}}};Write-Output ('__PSAI_FIXTURE_'+'READY__')\r");
+        terminal.WaitFor("__PSAI_FIXTURE_READY__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_FIXTURE_READY__", TimeSpan.FromSeconds(10));
         // 模式标记必须由真实 prompt 动态显示，且不能依赖预先配置模型。
         terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='AI' }\r");
         terminal.WaitFor("[AI] PS ", TimeSpan.FromSeconds(10));
@@ -128,12 +133,49 @@ try
         {
             throw new InvalidOperationException($"AI 模式空闲时重复输出 Prompt：{initialAiPromptCount} -> {idleAiPromptCount}\n{terminal.GetTranscript()}");
         }
+
+        terminal.Send("Get-Date\r");
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_1__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_FIXTURE_RESULT_1__", TimeSpan.FromSeconds(10));
+        terminal.Send("if ($true) {\r");
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_2__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_FIXTURE_RESULT_2__", TimeSpan.FromSeconds(10));
+        terminal.Send("foreach ($entry in");
+        terminal.Send("\u001bOQ");
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_3__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_FIXTURE_RESULT_3__", TimeSpan.FromSeconds(10));
+        terminal.Send("请问什么是进程\r");
+        terminal.WaitForAfter("[AI] PS ", "请问什么是进程", TimeSpan.FromSeconds(10));
+
+        // F3 不触发模型，未闭合代码由原生 AcceptLine 继续多行编辑。
+        terminal.Send("if ($true) {");
+        terminal.Send("\u001bOR");
+        terminal.WaitFor(">> ", TimeSpan.FromSeconds(10));
+        terminal.Send("Write-Output ('__PSAI_NATIVE_'+'CONTINUED__') }");
+        terminal.Send("\u001bOR");
+        terminal.WaitFor("__PSAI_NATIVE_CONTINUED__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_NATIVE_CONTINUED__", TimeSpan.FromSeconds(10));
+        terminal.Send("if ($true) {");
+        terminal.Send("\u0003");
+        Thread.Sleep(200);
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {if($script:ConptyCount -ne 4 -or @(Get-PSAIRun).Count -ne 3 -or $script:PendingAIInputBridge){throw 'route-count'};$h=[Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems().CommandLine;if($h -notcontains 'if ($true) {' -or $h -notcontains 'foreach ($entry in' -or $h -contains '# if ($true) {'){throw 'history-bridge'};Write-Output ('__PSAI_ROUTE_'+'ONCE__')}");
+        terminal.Send("\u001bOR");
+        terminal.WaitFor("__PSAI_ROUTE_ONCE__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_ROUTE_ONCE__", TimeSpan.FromSeconds(10));
         terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='Auto' }");
         terminal.Send("\u001bOR");
         terminal.WaitFor("[AUTO] PS ", TimeSpan.FromSeconds(10));
+        terminal.Send("if ($true) {\r");
+        terminal.Send("Write-Output ('__PSAI_AUTO_'+'CONTINUED__') }\r");
+        terminal.WaitFor("__PSAI_AUTO_CONTINUED__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AUTO] PS ", "__PSAI_AUTO_CONTINUED__", TimeSpan.FromSeconds(10));
         terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='Off' };Write-Output ('__PSAI_MODE_'+'OFF__')");
         terminal.Send("\u001bOR");
         terminal.WaitFor("__PSAI_MODE_OFF__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_MODE_OFF__", TimeSpan.FromSeconds(10));
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {Set-Item function:script:Invoke-AISessionModel -Value $script:ConptyOriginal;$script:ConptyChoices=$false;$script:Config.models.Clear();$script:Config.activeModel=$null};Write-Output ('__PSAI_FIXTURE_'+'REMOVED__')\r");
+        terminal.WaitFor("__PSAI_FIXTURE_REMOVED__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("PS ", "__PSAI_FIXTURE_REMOVED__", TimeSpan.FromSeconds(10));
 
         terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $value=Read-AIChoice (Get-AIText 'SelectNumber') @(1,2) 1;Write-Output ('__PSAI_DEFAULT_CHOICE__'+$value) }\r");
         terminal.WaitFor("Enter a number (default 1):", TimeSpan.FromSeconds(10));
@@ -187,7 +229,7 @@ try
 
     Console.WriteLine(useProfile
         ? "ConPTY Profile 冒烟测试通过：模块已自动加载，F2/F3 已注册，F3 已真实触发。"
-        : "ConPTY 交互冒烟测试通过：F2/F3、设置菜单、AI/Auto 模式标记与中英文默认选择均已验证，原始输入完整保留，内部调度命令未显示。");
+        : "ConPTY 交互冒烟测试通过：AI 合法/不完整输入只提交一次，Enter/F2/F3、取消、原生续行、历史、咨询和设置菜单已验证，内部调度命令未显示。");
     return 0;
 }
 catch (Exception exception)
@@ -234,6 +276,13 @@ static class TerminalText
 
     internal static string Strip(string value)
     {
+        // ConPTY 会把 Prompt 中的空格编码为光标前移，归一化时保留可见间隔。
+        value = System.Text.RegularExpressions.Regex.Replace(value, "\\u001B\\[(?<Count>[0-9]{0,3})C", match =>
+        {
+            int count;
+            if (!int.TryParse(match.Groups["Count"].Value, out count)) { count = 1; }
+            return new string(' ', Math.Clamp(count, 1, 160));
+        });
         // 仅用于测试日志归一化；产品中的有状态清洗器另有完整测试。
         return System.Text.RegularExpressions.Regex.Replace(
             value,

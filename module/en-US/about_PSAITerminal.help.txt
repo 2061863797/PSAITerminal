@@ -14,8 +14,17 @@ GETTING STARTED
 
 MODES
     Off   Enter always executes PowerShell normally.
-    AI    Natural language is routed to AI; valid Shell input keeps its execution path.
+    AI    All ordinary input goes to AI first, including valid Shell and incomplete code.
     Auto  Deterministic PowerShell commands run directly; natural-language or failed commands go to AI.
+
+INPUT
+    Enter/F2 submits incomplete AI input once and retains its original text.
+    Auto/Off/F3 keep native continuation; Shift+Enter keeps multiline editing.
+    Explicit consultation has no tools or Run. Ambiguous Auto input is clarified locally.
+
+SESSIONS
+    A new terminal has its own session. Importing, creating, or switching sessions does
+    not write shared configuration. Explicit configuration changes still check revisions.
 
 LANGUAGE
     The default interface language is English. Type ai, select Language / 语言,
@@ -71,6 +80,25 @@ RELIABILITY (1.0.4)
     or exhaustive side-effect detection is provided. Failed commands display failure, not completion.
     Completed legacy Runs remain readable. Unfinished legacy Runs must replan and reapprove.
     Uncertain executions require Resolve-PSAIRun before resuming; they are never automatically replayed.
+
+UNRELEASED HARDENING
+    Native, JSON, and YAML proposals require all description and planning fields. Invalid proposals
+    receive at most one repair; a rejected first plan does not freeze the Run plan.
+    Commands over 16384 characters or changed by masking are rejected. Use variables or credential
+    references instead. Edited descriptions accept only a four-field JSON object, optionally inside
+    one complete JSON fence; extra text and tool calls invalidate approval.
+    Auto preserves the actual native exit code and keeps the previous LASTEXITCODE for pure PowerShell.
+    Streaming line limits are enforced during reading. DACL failures raise the original Win32 error.
+
+UNINSTALL
+    Both uninstall entries preflight ownership and absolute paths and reject protected directories
+    and reparse points. Force still respects WhatIf and explicit Confirm. Failures raise errors.
+    PurgeUserData deletes verified config/session/Run files and credentials for configured model names
+    only (PSAITerminal/Model/<name>), preserving unrelated files and credentials. Ordinary uninstall
+    keeps credentials. Credential failure preserves configuration for retry.
+    CredentialsPurged is false without Purge, and true only when all requested targets are absent.
+    Loaded Windows DLLs can block built-in removal. Close the terminal and retry the standalone
+    script from pwsh -NoProfile or powershell -NoProfile. Credential cleanup exits before DLL deletion.
 
 NOTES
     No model is bundled. The first installation starts in Off mode and does not connect automatically.

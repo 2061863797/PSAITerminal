@@ -94,7 +94,9 @@ jobs:
             './Uninstall-PSAITerminal.ps1'
             './module/PSAITerminal.psd1'
             './module/PSAITerminal.psm1'
+            './module/PSAIStorageSafety.ps1'
           )
+          $targets += @(Get-ChildItem ./tests -Filter '*.ps1' -File | ForEach-Object FullName)
           $issues = foreach ($target in $targets) {
             Invoke-ScriptAnalyzer -Path $target -Settings ./.psscriptanalyzer.psd1
           }
@@ -194,6 +196,7 @@ jobs:
             './Uninstall-PSAITerminal.ps1'
             './module/PSAITerminal.psd1'
             './module/PSAITerminal.psm1'
+            './module/PSAIStorageSafety.ps1'
             './tests/run.ps1'
             './tests/host-probe.ps1'
             './tests/parse.ps1'
@@ -227,6 +230,7 @@ jobs:
           $expected = @(
             'PSAITerminal.psd1'
             'PSAITerminal.psm1'
+            'PSAIStorageSafety.ps1'
             'bin/PSAITerminal.dll'
             'bin/PSAITerminal.PowerShell7.dll'
             'README.md'
@@ -419,4 +423,3 @@ jobs:
               throw
             }
           }
-

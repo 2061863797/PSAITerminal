@@ -27,7 +27,7 @@ PSAITerminal 是一个原生运行在 PowerShell 中的智能终端助手。
 - **执行完成静默策略与 F7 深度解读**：
   - 命令正常执行成功后不再自动输出长篇冗长文本，避免刷屏；需要深入理解时，随时按下 **F7** 获取专业剖析。
 - **新终端自动上下文隔离**：
-  - 每次打开新终端自动清除历史上下文记忆，消除旧会话包袱。
+  - 每次打开新终端创建独立会话，保留已有历史；导入、新建和切换会话不改写共享配置。
 
 ### 🛡️ 严格安全审计（六要素与统一三项批准菜单）
 
@@ -88,6 +88,8 @@ PSAITerminal 是一个原生运行在 PowerShell 中的智能终端助手。
 
 当前版本为 [`1.0.4`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.4)。手动隔离验收参见 [手动验收清单](docs/acceptance-1.0.4.md)。
 
+本轮整改尚未发布，源码版本仍为 `1.0.4`，内容记录在更新日志的“未发布”章节。以下 AI 输入和 Purge 行为适用于本次源码构建的候选包。
+
 Windows PowerShell 5.1 与 PowerShell 7.4+ 均可直接安装：
 
 ```powershell
@@ -118,7 +120,7 @@ PSAITerminal 提供多种极简卸载方式：
    # 卸载当前模块并清理 Profile（默认保留用户配置与密钥）
    Uninstall-PSAITerminal
 
-   # 卸载并彻底清除用户配置与历史数据
+   # 同时清理已确认的配置、会话、Run 和配置模型对应的凭据
    Uninstall-PSAITerminal -PurgeUserData
    ```
 
@@ -127,12 +129,16 @@ PSAITerminal 提供多种极简卸载方式：
    # 卸载当前宿主模块并自动清理 Profile 自动加载块
    .\Uninstall-PSAITerminal.ps1 -TargetHost Current
 
-   # 如需同时彻底删除用户配置与历史会话数据，追加 -PurgeUserData
+   # 同时清理已确认的数据和配置模型对应的凭据
    .\Uninstall-PSAITerminal.ps1 -TargetHost Current -PurgeUserData
 
    # 同时清理 Windows PowerShell 5.1 与 PowerShell 7 中的安装
    .\Uninstall-PSAITerminal.ps1 -TargetHost Both
    ```
+
+两个入口均先只读预检，再执行 `ShouldProcess`。`-Force -WhatIf` 不修改文件或凭据，`-Force` 仍遵守显式 `-Confirm`。相对路径、磁盘根目录、系统及用户基础目录和重解析点会被拒绝；无法确认归属的数据停止清理。Purge 保留目录中的无关文件，只删除当前配置模型名称对应的 `PSAITerminal/Model/<名称>` 凭据，不枚举或清理其他凭据。凭据删除失败时保留配置以便重试；`CredentialsPurged` 仅在请求 Purge 且全部目标已删除或不存在时为 `true`。
+
+Windows 可能锁定当前宿主加载的 DLL。内置卸载若无法删除程序集会报错，并保留模块清单与独立脚本。关闭占用模块的终端，再打开 `pwsh -NoProfile` 或 `powershell -NoProfile` 运行独立卸载脚本；该脚本在无 Profile 子进程清理凭据，子进程退出后才删除模块文件。
 
 > **安全提示**：当前发布包未作 Authenticode 代码签名。手动安装时请核对发布压缩包附带的 `SHA256SUMS-Windows.txt`。
 
@@ -201,7 +207,11 @@ ai help
 
 ### 2. AI 模式
 
-- 无论输入什么内容，均先提交给 AI 处理。
+- 普通输入全部先交给 AI，包括合法 Shell 命令和不完整代码；Enter/F2 每次只提交一次，保留输入原文。
+- F3 明确执行 Shell，`ai` 元命令保持控制语义。Auto/Off/F3 保留原生续行，Shift+Enter 保留多行编辑。
+- 明确咨询（包括“请问什么是进程”）只回答，不携带工具、不创建 Run；Auto 模式的模糊输入仍在本地澄清。
+
+工具提议的原生调用、正文 JSON 和 YAML 使用同一套必需字段校验。缺失说明、计划或完成条件时最多请求一次修复，第二次无效就停止；首次无效计划不会固定到 Run。命令超过 16384 字符或包含会被脱敏规则改写的内容时直接拒绝，请改用变量或凭据引用。编辑后的四项说明支持纯 JSON 对象或完整包裹于单个 JSON 代码块的对象，额外文字、工具调用或无效字段仍会阻止批准。
 
 ### 3. Off 模式
 

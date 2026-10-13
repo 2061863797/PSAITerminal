@@ -44,6 +44,18 @@ $script:response='{"purpose":"新目的","expectedOutcome":"新预期","sideEffe
 Update-AIProposalExplanation $run $proposal ([Threading.CancellationToken]::None)
 Assert-AIProposalExplanation $proposal
 if ($script:requests -ne 2 -or $proposal.rollbackHint -ne '新回滚') { throw '编辑后必须请求新说明。' }
+$json=$script:response
+$fence=[string]::new([char]96,3)
+$script:response="$fence"+"json`n$json`n$fence"
+Update-AIProposalExplanation $run $proposal ([Threading.CancellationToken]::None)
+Assert-AIProposalExplanation $proposal
+foreach ($invalid in @("额外说明`n$($script:response)","$($script:response)`n额外说明", "$($script:response)`n$($script:response)")) {
+    $script:response=$invalid
+    Update-AIProposalExplanation $run $proposal ([Threading.CancellationToken]::None)
+    if ($proposal.explanationReady) { throw '说明中额外内容或多个代码块必须拒绝。' }
+}
+$script:response=$json
+Update-AIProposalExplanation $run $proposal ([Threading.CancellationToken]::None)
 $digest = Get-AIApprovalDigest 'run' 'step' $proposal.command $proposal
 foreach ($field in @('purpose','expectedOutcome','sideEffects','rollbackHint','explanationReady')) {
     $before = $proposal[$field]

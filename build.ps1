@@ -49,6 +49,7 @@ try {
     $publishFiles = [ordered]@{
         'module/PSAITerminal.psd1' = 'PSAITerminal.psd1'
         'module/PSAITerminal.psm1' = 'PSAITerminal.psm1'
+        'module/PSAIStorageSafety.ps1' = 'PSAIStorageSafety.ps1'
         'LICENSE' = 'LICENSE'
         'README.md' = 'README.md'
         'CHANGELOG.md' = 'CHANGELOG.md'

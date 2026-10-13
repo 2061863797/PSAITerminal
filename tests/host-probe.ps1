@@ -35,10 +35,11 @@ $status = Get-PSAIIntegrationStatus
 if ($PSVersionTable.PSEdition -eq 'Desktop') {
     Assert-Probe (-not $status.OfficialIntegrationSupported) 'Windows PowerShell 不应声明支持官方预测/反馈集成。'
     Assert-Probe ($status.Prediction -eq '宿主不支持') 'Windows PowerShell 的预测状态必须明确为宿主不支持。'
-    $before = [IO.File]::ReadAllText((Join-Path $ConfigPath 'config.json'), [Text.Encoding]::UTF8)
+    $configFile = Join-Path $ConfigPath 'config.json'
+    $before = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllText($configFile, [Text.Encoding]::UTF8) } else { $null }
     try { Enable-PSAIPredictor; throw 'Windows PowerShell 中 Enable-PSAIPredictor 应失败。' }
     catch { if ($_.Exception.Message -notmatch '宿主不支持') { throw } }
-    $after = [IO.File]::ReadAllText((Join-Path $ConfigPath 'config.json'), [Text.Encoding]::UTF8)
+    $after = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllText($configFile, [Text.Encoding]::UTF8) } else { $null }
     Assert-Probe ($before -ceq $after) '拒绝预测器操作时不能修改共享配置。'
 } else {
     Assert-Probe $status.OfficialIntegrationSupported 'PowerShell 7.4+ 必须加载官方预测/反馈集成。'
@@ -88,15 +89,15 @@ function global:Complete-PSAIToolExecution {
     param($RunId,$StepId,[bool]$Succeeded,$Output,$ExitCode)
     [void]$ExitCode
     [void]$RunId; [void]$StepId
-    $global:HostProbeHarnessSuccess = $Succeeded
-    $global:HostProbeHarnessOutput = $Output
+    $script:HostProbeHarnessSuccess = $Succeeded
+    $script:HostProbeHarnessOutput = $Output
 }
 try {
     . ([scriptblock]::Create($harnessScript))
-    Assert-Probe ($global:HostProbeHarnessSuccess -eq $true) 'Agent Harness 在当前宿主中未能完成无副作用命令。'
+    Assert-Probe ($script:HostProbeHarnessSuccess -eq $true) 'Agent Harness 在当前宿主中未能完成无副作用命令。'
 } finally {
     Remove-Item Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
-    Remove-Variable HostProbeHarnessSuccess,HostProbeHarnessOutput -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable HostProbeHarnessSuccess,HostProbeHarnessOutput -Scope Script -ErrorAction SilentlyContinue
 }
 
 $sendClient = [Net.Http.HttpClient]::new()

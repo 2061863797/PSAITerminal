@@ -12,11 +12,14 @@ $files = @(
     'Uninstall-PSAITerminal.ps1',
     'module/PSAITerminal.psd1',
     'module/PSAITerminal.psm1',
+    'module/PSAIStorageSafety.ps1',
     'tests/host-probe.ps1',
     'tests/run.ps1',
     'tests/intent-probe.ps1',
     'tests/approval-probe.ps1',
-    'tests/reliability.ps1'
+    'tests/reliability.ps1',
+    'tests/hardening.ps1',
+    'tests/resources.ps1'
 )
 
 foreach ($relativePath in $files) {

@@ -4,6 +4,9 @@ $ErrorActionPreference = 'Stop'
 Add-Type -Path $AssemblyPath
 $cases = @(
     @('解释一下进程和线程的区别', 'Consultation'),
+    @('请问什么是进程', 'Consultation'),
+    @('请问进程和线程有什么区别', 'Consultation'),
+    @('请教一下进程和线程区别是什么', 'Consultation'),
     @('帮我结束这个进程好吗', 'Operation'),
     @('你好', 'Consultation'),
     @('查 IP', 'Operation'),

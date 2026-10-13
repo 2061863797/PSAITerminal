@@ -46,6 +46,12 @@ function Assert-Throws([scriptblock]$Action, [string]$Pattern, [string]$Message)
     catch { if ($_.Exception.Message -eq $Message -or $_.Exception.Message -notmatch $Pattern) { throw } }
 }
 
+function New-FixtureSecureString {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingConvertToSecureStringWithPlainText','',Justification='仅使用固定合成测试值，不读取真实密钥。')]
+    param([ValidateSet('probe-secret','session-only-secret')][string]$Value)
+    ConvertTo-SecureString $Value -AsPlainText -Force
+}
+
 function Start-AIMockServer([string[]]$Responses) {
     $probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $probe.Start()
@@ -129,7 +135,7 @@ function Stop-AIMockServer($Server) {
             $async = $closer.BeginConnect([Net.IPAddress]::Loopback, [int]$Server.Port, $null, $null)
             [void]$async.AsyncWaitHandle.WaitOne(50)
             $closer.Dispose()
-        } catch {}
+        } catch { Write-Verbose '测试服务器已关闭，不需要建立清理连接。' }
     }
     Stop-Job $Server.Job -ErrorAction SilentlyContinue
     Remove-Job $Server.Job -Force -ErrorAction SilentlyContinue
@@ -212,7 +218,8 @@ try {
             Assert-Equal $null ([PSAITerminal.PlatformCredentialStore]::Get($credentialTarget)) '密钥库不可用时读取应安全返回空。'
         }
     } finally {
-        try { [PSAITerminal.PlatformCredentialStore]::Remove($credentialTarget) } catch {}
+        try { [PSAITerminal.PlatformCredentialStore]::Remove($credentialTarget) }
+        catch { Write-Verbose "合成测试凭据清理失败：$($_.Exception.Message)" }
     }
 
     $limitedContent = [Net.Http.StringContent]::new('12345')
@@ -278,6 +285,8 @@ try {
     } finally { $firstLock.Dispose() }
 
     # 新安装、配置迁移和确定性路由。
+    Assert-Equal $false (Test-Path -LiteralPath (Join-Path $env:PSAI_CONFIG_HOME 'config.json')) '模块导入不能隐式写入共享配置。'
+    Set-PSAITerminalOption -Language en-US | Out-Null
     $config = Get-Content -LiteralPath (Join-Path $env:PSAI_CONFIG_HOME 'config.json') -Raw | ConvertFrom-Json
     Assert-Equal 2 $config.schemaVersion '配置必须写为 schemaVersion 2。'
     Assert-Equal 'en-US' $config.language '新安装必须默认使用英文界面。'
@@ -290,6 +299,7 @@ try {
     $menuEntryProbe = & $module {
         $prompts = [Collections.Generic.List[string]]::new()
         function Read-Host {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets','',Justification='局部交互测试桩，测试结束即移除。')]
             param([Parameter(ValueFromRemainingArguments)]$Arguments)
             $prompts.Add(($Arguments -join ' '))
             '0'
@@ -305,6 +315,7 @@ try {
     $menuUninstallProbe = & $module {
         $prompts = [Collections.Generic.List[string]]::new()
         function Read-Host {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets','',Justification='局部菜单测试桩，测试结束即移除。')]
             param([Parameter(ValueFromRemainingArguments)]$Arguments)
             $prompt = ($Arguments -join ' ')
             $prompts.Add($prompt)
@@ -379,7 +390,7 @@ try {
     $keyProbe = & $module {
         $registered = Set-AIPSAIKeyHandler F12 'PSAITest' {} @()
         try { $handler = Get-AIPSReadLineKeyHandler F12; [pscustomobject]@{Registered=$registered;Function=$handler.Function} }
-        finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
+        finally { Remove-PSReadLineKeyHandler -Chord F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
     }
     Assert-Equal $true $keyProbe.Registered '未占用快捷键应能注册。'
     Assert-Equal 'PSAITest' $keyProbe.Function '注册后应能从 PSReadLine 查询到处理器。'
@@ -388,7 +399,7 @@ try {
         try {
             $registered = Set-AIPSAIKeyHandler F12 'PSAIConflict' {} @()
             [pscustomobject]@{Registered=$registered;Function=(Get-AIPSReadLineKeyHandler F12).Function}
-        } finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue }
+        } finally { Remove-PSReadLineKeyHandler -Chord F12 -ErrorAction SilentlyContinue }
     } 3>$null
     Assert-Equal $false $conflictProbe.Registered '默认不得覆盖已有快捷键。'
     Assert-Equal 'AcceptLine' $conflictProbe.Function '冲突处理器必须保持不变。'
@@ -398,7 +409,7 @@ try {
         try {
             $registered = Set-AIPSAIKeyHandler F12 'PSAITestDefaultBinding' {} @('AcceptLine')
             [pscustomobject]@{Registered=$registered;Function=(Get-AIPSReadLineKeyHandler F12).Function}
-        } finally { Remove-PSReadLineKeyHandler -Key F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
+        } finally { Remove-PSReadLineKeyHandler -Chord F12 -ErrorAction SilentlyContinue; [void]$script:BoundKeys.Remove('F12'); [void]$script:OriginalKeyBindings.Remove('F12') }
     }
     Assert-Equal $true $defaultBindingProbe.Registered 'PSAITerminal 应能替换明确允许的 PSReadLine 默认绑定。'
     Assert-Equal 'PSAITestDefaultBinding' $defaultBindingProbe.Function '替换默认绑定后应注册 PSAITerminal 处理器。'
@@ -541,6 +552,7 @@ try {
             try {
                 Set-Item -Path function:Write-AIStreamText -Value {
                     param([string]$Text, [switch]$First)
+                    [void]$Text; [void]$First
                     $script:StreamProbeTimes.Add($script:StreamProbeStopwatch.ElapsedMilliseconds)
                 }
                 $model=[ordered]@{name='mock';protocol='OpenAIChat';endpoint="http://127.0.0.1:$port";modelId='mock';parameters=@{};capabilities=@{streaming=$true;toolCalling=$true;usage=$false}}
@@ -681,7 +693,7 @@ try {
     Assert-Equal $originalMaxSteps (Get-PSAITerminalOption).Execution.maxAgentSteps '选项写盘失败后必须恢复内存状态。'
     & $module { param($path) $script:ConfigPath=$path } $transactionConfigPath
 
-    $probeKey = ConvertTo-SecureString 'probe-secret' -AsPlainText -Force
+    $probeKey = New-FixtureSecureString 'probe-secret'
     $server = Start-AIMockServer @('__STATUS_404__{"error":"models unsupported"}',$openAIStream)
     try {
         New-PSAIModel -Name generationOnly -Protocol OpenAIChat -Endpoint "http://127.0.0.1:$($server.Port)" `
@@ -696,7 +708,7 @@ try {
         Remove-PSAIModel -Name generationOnly -Confirm:$false
     } finally { Stop-AIMockServer $server }
 
-    $sessionKey = ConvertTo-SecureString 'session-only-secret' -AsPlainText -Force
+    $sessionKey = New-FixtureSecureString 'session-only-secret'
     $secureModelName = 'secure-' + [guid]::NewGuid().ToString('N')
     New-PSAIModel -Name $secureModelName -Protocol OpenAIChat -Endpoint http://127.0.0.1:12345 -ModelId mock -ApiKey $sessionKey -SessionOnly | Out-Null
     $originalConfigPath = & $module { $script:ConfigPath }
@@ -826,7 +838,7 @@ try {
         Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($proposalServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
         New-PSAIModel -Name alternate -Protocol Ollama -Endpoint ([uri]"http://127.0.0.1:$($finalServer.Port)") -ModelId qwen3 `
             -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
-        function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) '' }
+        function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) [void]$Arguments; '' }
         try { $step = Start-PSAIRun -Task '告诉我当前日期' }
         finally { Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue }
         Assert-True ($null -ne $step) '模型工具调用应产生待执行步骤。'
@@ -905,13 +917,28 @@ try {
     Assert-Match $extractedYaml.CleanedText '根因说明：查询系统密钥。' '提取后必须保留说明文字。'
     Assert-Equal $false ($extractedYaml.CleanedText.Contains('- command:')) '提取后不能残留命令键值列表。'
 
+    # 经过真实流解析再进入 Harness：缺字段必须有限修复；显示清洗不能改写正文命令。
+    $bodyCases=@(
+        (@{name='powershell';arguments=@{command='Get-Date';expectedOutcome='e';sideEffects='s';rollbackHint='r';plan=$singlePlan;stepIndex=1;stepRole='Operation';afterSuccess='Complete'}} | ConvertTo-Json -Depth 10 -Compress),
+        (@{name='powershell';arguments='invalid-json'} | ConvertTo-Json -Compress),
+        $yamlToolText.Replace("Get-ItemProperty -Path 'HKLM:\Software'", "Write-Output '$([char]27)[31mfixture-value'")
+    )
+    foreach($bodyCase in $bodyCases){
+        $payload=@{message=@{content=$bodyCase};done=$true} | ConvertTo-Json -Depth 10 -Compress
+        $bodyServer=Start-AIMockServer @($payload,$payload)
+        try {
+            Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($bodyServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
+            Assert-Throws { Start-PSAIRun -Task '拒绝无效正文提议' } '连续两次返回无效工具调用' '正文提议必须按原文校验、仅修复一次且不能执行改写后的命令。'
+        }finally{Stop-AIMockServer $bodyServer}
+    }
+
 
     # 模拟真实模型仅返回 Markdown JSON 块时的端到端容错执行
     $fallbackResponse = [ordered]@{message=@{content=$markdownToolText};done=$true} | ConvertTo-Json -Depth 20 -Compress
     $fallbackServer = Start-AIMockServer @($fallbackResponse)
     try {
         Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($fallbackServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
-        function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) '' }
+        function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) [void]$Arguments; '' }
         try {
             $fallbackRun = Start-PSAIRun -Task '修复语法错误' -Failure ([ordered]@{task='修复';command='$x = )';output='语法错误';succeeded=$false;exitCode=$null})
         } finally {
@@ -1060,7 +1087,11 @@ try {
         $responses = [Collections.Generic.Queue[string]]::new()
         foreach ($response in @('1','','3')) { $responses.Enqueue($response) }
         $prompts = [Collections.Generic.List[string]]::new()
-        function Read-Host { param([Parameter(Position=0)]$Prompt) $prompts.Add([string]$Prompt); $responses.Dequeue() }
+        function Read-Host {
+            [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets','',Justification='局部审批测试桩，测试结束即移除。')]
+            param([Parameter(Position=0)]$Prompt)
+            $prompts.Add([string]$Prompt); $responses.Dequeue()
+        }
         try { $ticket = Show-AIToolApproval $run $run.pendingProposal ([Threading.CancellationToken]::None) }
         finally { Remove-Item Function:\Read-Host -ErrorAction SilentlyContinue }
         $reloaded = Import-AIRun $id
@@ -1109,7 +1140,8 @@ try {
         $originalDirectory=$script:RunDirectory
         $run=[ordered]@{schemaVersion=1;id=[guid]::NewGuid().ToString('N');sessionId=$script:CurrentSession.id;task='回滚测试';state='Created';stepCount=0;maxSteps=2
             pendingProposal=$null;events=@();createdUtc=[DateTime]::UtcNow.ToString('O');updatedUtc=[DateTime]::UtcNow.ToString('O')}
-        try { $script:RunDirectory=$blockedPath; Set-AIRunState $run 'CallingModel' } catch {}
+        try { $script:RunDirectory=$blockedPath; Set-AIRunState $run 'CallingModel' }
+        catch { Write-Verbose "预期的持久化失败：$($_.Exception.Message)" }
         finally { $script:RunDirectory=$originalDirectory }
         [pscustomobject]@{State=$run.state;EventCount=@($run.events).Count}
     } $blockedRunDirectory
@@ -1282,7 +1314,6 @@ try {
 [IO.File]::WriteAllText(`$testProfile, "# User Profile Content`r`n# PSAITerminal 自动加载（开始）`r`nImport-Module PSAITerminal`r`n# PSAITerminal 自动加载（结束）`r`n", [Text.Encoding]::UTF8)
 [void][IO.Directory]::CreateDirectory(`$testConfig)
 [void][IO.Directory]::CreateDirectory(`$testData)
-[IO.File]::WriteAllText((Join-Path `$testConfig 'config.json'), '{"test":1}', [Text.Encoding]::UTF8)
 [IO.File]::WriteAllText((Join-Path `$testData 'cache.dat'), '123', [Text.Encoding]::UTF8)
 
 `$env:PSAI_CONFIG_HOME = `$testConfig
@@ -1290,18 +1321,25 @@ try {
 `$PROFILE.CurrentUserCurrentHost = `$testProfile
 
 Import-Module '$escapedSandboxPsd1' -Force
-Uninstall-PSAITerminal -PurgeUserData -Force
+Set-PSAITerminalOption -Language zh-CN | Out-Null
+try { Uninstall-PSAITerminal -PurgeUserData -Force | Out-Null }
+catch {
+    # Windows 宿主可能保持已加载 DLL 的文件锁；必须明确失败，由独立脚本完成。
+    if (`$_.Exception.Message -notmatch '模块文件删除失败') { throw }
+}
 `$profileAfter = [IO.File]::ReadAllText(`$testProfile, [Text.Encoding]::UTF8)
 if (`$profileAfter -match 'PSAITerminal 自动加载') { exit 10 }
 if (-not (`$profileAfter -match '# User Profile Content')) { exit 11 }
 if (Test-Path -LiteralPath `$testConfig) { exit 12 }
-if (Test-Path -LiteralPath `$testData) { exit 13 }
+if (-not (Test-Path -LiteralPath (Join-Path `$testData 'cache.dat'))) { exit 13 }
 exit 0
 "@
     [IO.File]::WriteAllText($testBuiltinScript, $builtinTestScript, (New-Object Text.UTF8Encoding($true)))
     $hostExe = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh' } else { 'powershell' }
     & $hostExe -NoProfile -ExecutionPolicy Bypass -File $testBuiltinScript
     Assert-Equal 0 $LASTEXITCODE '模块内置 Uninstall-PSAITerminal 必须安全清理 Profile 自动加载并清除指定用户数据。'
+    & (Join-Path $moduleOutput 'Uninstall-PSAITerminal.ps1') -ModuleRoot (Split-Path -Parent $sandboxModuleDir) -NoProfileIntegration -Force | Out-Null
+    Assert-Equal $false (Test-Path -LiteralPath $sandboxModuleDir) '子进程退出后，独立卸载器必须完成被占用模块文件的删除。'
 
     # Both 只能使用两个标准用户目录；测试通过专用文档根隔离，绝不触碰真实安装目录。
     $env:PSAI_TEST_DOCUMENTS_HOME = Join-Path $testRoot 'installer/both-documents'
@@ -1355,6 +1393,10 @@ exit 0
     if ($LASTEXITCODE -ne 0) { throw '审批说明回归失败。' }
     & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'reliability.ps1') -ModulePath $modulePath
     if ($LASTEXITCODE -ne 0) { throw '交互可靠性回归失败。' }
+    & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'hardening.ps1') -ModulePath $modulePath
+    if ($LASTEXITCODE -ne 0) { throw '整改回归失败。' }
+    & $probeHost -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'resources.ps1') -ModulePath $modulePath
+    if ($LASTEXITCODE -ne 0) { throw '原生资源回归失败。' }
     Write-Host 'PSAITerminal 完整回归测试通过。' -ForegroundColor Green
 } finally {
     Remove-Item Function:\Read-Host,Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
