@@ -18,11 +18,4 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
   </ItemGroup>
-
-  <ItemGroup>
-    <Compile Remove="AITerminalOfficialIntegration.cs" />
-    <Compile Remove="PowerShell7/**/*.cs" />
-    <EmbeddedResource Remove="PowerShell7/**" />
-    <None Remove="PowerShell7/**" />
-  </ItemGroup>
 </Project>

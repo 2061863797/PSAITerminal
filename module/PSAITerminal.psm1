@@ -6,7 +6,6 @@
 #     模块结构索引：
 #     - 本文件：模块初始化与全局状态、功能文件加载、导出与清理钩子
 #     - PSAIStorageSafety.ps1：与安装/卸载脚本共用的文件、Profile 与安全清理辅助函数
-#     - Private/01-Integration.ps1：官方集成（PowerShell 7 预测器与反馈接入）
 #     - Private/02-I18n.ps1：本地化与多语言字典
 #     - Private/03-Prompt.ps1：终端提示符（Prompt）安全包装与防重入
 #     - Private/04-Config.ps1：配置管理、原子读写与并发乐观锁
@@ -32,20 +31,11 @@ $script:ModuleRoot = $PSScriptRoot
 $script:HostEdition = if ($PSVersionTable.PSEdition) { [string]$PSVersionTable.PSEdition } else { 'Desktop' }
 $script:HostVersion = [version]$PSVersionTable.PSVersion
 $script:IsWindowsPlatform = $env:OS -eq 'Windows_NT'
-$script:OfficialIntegrationAvailable = $false
 if (-not $script:IsWindowsPlatform) {
-    throw 'PSAITerminal 1.0.0 仅支持 Windows。'
+    throw 'PSAITerminal 仅支持 Windows。'
 }
-if ($script:HostEdition -eq 'Core') {
-    if ($script:HostVersion -lt [version]'7.4') {
-        throw "PSAITerminal 在 PowerShell Core 中要求 7.4 或更高版本；当前为 $script:HostVersion。"
-    }
-    $integrationAssemblyPath = Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll'
-    if (-not (Test-Path -LiteralPath $integrationAssemblyPath -PathType Leaf)) {
-        throw "PowerShell 7 集成程序集不存在：$integrationAssemblyPath"
-    }
-    [void][Reflection.Assembly]::LoadFrom($integrationAssemblyPath)
-    $script:OfficialIntegrationAvailable = $true
+if ($script:HostEdition -eq 'Core' -and $script:HostVersion -lt [version]'7.4') {
+    throw "PSAITerminal 在 PowerShell Core 中要求 7.4 或更高版本；当前为 $script:HostVersion。"
 }
 $script:ValidModes = @('Off', 'AI', 'Auto')
 $script:ValidProtocols = @('Anthropic', 'OpenAIChat')
@@ -55,8 +45,7 @@ $script:SecretMaskingCache = [Collections.Generic.HashSet[string]]::new([StringC
 $script:SecretMaskingCacheInitialized = $false
 $script:LastSubmittedCommand = $null
 $script:LastCommandResult = $null
-$script:PredictorEnabled = $false
-$script:FeedbackEnabled = $false
+
 $script:PSReadLineIntegrated = $false
 $script:ShortcutMigrated = $false
 $script:OriginalKeyBindings = @{}
@@ -98,12 +87,7 @@ foreach ($privateScript in @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot
 Initialize-AIState
 Initialize-AISessionState
 
-if ($script:OfficialIntegrationAvailable -and $script:Config.integrations.feedbackProvider) {
-    [PSAITerminal.AITerminalOfficialIntegration]::RegisterFeedback(); $script:FeedbackEnabled = $true
-}
-if ($script:OfficialIntegrationAvailable -and $script:Config.integrations.predictor) {
-    [PSAITerminal.AITerminalOfficialIntegration]::RegisterPredictor(); $script:PredictorEnabled = $true
-}
+
 Register-AIPSReadLineIntegration
 Register-AIPromptIntegration
 if ($script:Config.activeModel -and $Host.Name -eq 'ConsoleHost' -and
@@ -123,9 +107,6 @@ if (-not $script:ConfigLoadFailed -and -not [bool]$script:Config.onboardingShown
 $ExecutionContext.SessionState.Module.OnRemove = {
     Unregister-AIPSReadLineIntegration
     Unregister-AIPromptIntegration
-    if ($script:OfficialIntegrationAvailable) {
-        [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll()
-    }
 }
 
 Set-Alias -Name Configure-PSAI -Value Open-PSAISettings -Scope Script
@@ -137,7 +118,7 @@ Export-ModuleMember -Function @(
     'New-PSAISession','Get-PSAISession','Select-PSAISession','Clear-PSAISession',
     'Start-PSAIRun','Get-PSAIRun','Resume-PSAIRun','Resolve-PSAIRun','Stop-PSAIRun',
     'Start-PSAIToolExecution','Complete-PSAIToolExecution','Start-PSAIAutoFallback',
-    'Invoke-PSAI','Invoke-PSAIAutoCompletion','Show-PSAIResultExplanation','Enable-PSAIPredictor','Disable-PSAIPredictor',
+    'Invoke-PSAI','Invoke-PSAIAutoCompletion','Show-PSAIResultExplanation',
     'Get-PSAIIntegrationStatus','Test-PSAIConfiguration','Install-PSAIProfileIntegration','Uninstall-PSAIProfileIntegration',
     'Uninstall-PSAITerminal',
     'Show-AICliHelp'

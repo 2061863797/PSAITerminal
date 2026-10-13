@@ -32,18 +32,8 @@ Assert-Probe ($moduleSource -notmatch '\.Content\.ReadAsStream\s*\(') '模块不
 Assert-Probe ($moduleSource -match '\$PSVersionTable\.PSVersion\s*-ge\s*\[version\]\x27?7\.3') 'Agent Harness 必须在 5.1 中跳过 PowerShell 7 专属原生命令错误偏好变量。'
 
 $status = Get-PSAIIntegrationStatus
-if ($PSVersionTable.PSEdition -eq 'Desktop') {
-    Assert-Probe (-not $status.OfficialIntegrationSupported) 'Windows PowerShell 不应声明支持官方预测/反馈集成。'
-    Assert-Probe ($status.Prediction -eq '宿主不支持') 'Windows PowerShell 的预测状态必须明确为宿主不支持。'
-    $configFile = Join-Path $ConfigPath 'config.json'
-    $before = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllText($configFile, [Text.Encoding]::UTF8) } else { $null }
-    try { Enable-PSAIPredictor; throw 'Windows PowerShell 中 Enable-PSAIPredictor 应失败。' }
-    catch { if ($_.Exception.Message -notmatch '宿主不支持') { throw } }
-    $after = if (Test-Path -LiteralPath $configFile) { [IO.File]::ReadAllText($configFile, [Text.Encoding]::UTF8) } else { $null }
-    Assert-Probe ($before -ceq $after) '拒绝预测器操作时不能修改共享配置。'
-} else {
-    Assert-Probe $status.OfficialIntegrationSupported 'PowerShell 7.4+ 必须加载官方预测/反馈集成。'
-}
+Assert-Probe ($status.HostEdition -eq [string]$PSVersionTable.PSEdition) '集成状态必须报告当前宿主。'
+Assert-Probe (@(Get-ChildItem -LiteralPath (Join-Path $module.ModuleBase 'bin') -Filter '*.dll').Count -eq 1) '5.1 与 7 必须共用同一个程序集。'
 
 $risks = @(
     [PSAITerminal.AITerminalSecurity]::ClassifyRisk('Get-ChildItem').ToString(),

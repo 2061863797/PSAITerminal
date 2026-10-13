@@ -50,7 +50,7 @@ $script:DirectorySeparator = [IO.Path]::DirectorySeparatorChar
 
 function Test-PSAIPackageMatch([string]$Left, [string]$Right) {
     $expectedFiles = @(
-        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'PSAIStorageSafety.ps1', 'bin/PSAITerminal.dll', 'bin/PSAITerminal.PowerShell7.dll',
+        'PSAITerminal.psd1', 'PSAITerminal.psm1', 'PSAIStorageSafety.ps1', 'bin/PSAITerminal.dll',
         'README.md', 'CHANGELOG.md', 'LICENSE', 'Install-PSAITerminal.ps1', 'Uninstall-PSAITerminal.ps1',
         'zh-CN/about_PSAITerminal.help.txt', 'en-US/about_PSAITerminal.help.txt')
     foreach ($relativePath in $expectedFiles) {
@@ -76,7 +76,6 @@ $requiredSourceFiles = @(
     (Join-Path $PSScriptRoot 'PSAITerminal.psm1'),
     (Join-Path $PSScriptRoot 'PSAIStorageSafety.ps1'),
     (Join-Path $PSScriptRoot 'bin/PSAITerminal.dll'),
-    (Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll'),
     (Join-Path $PSScriptRoot 'README.md'),
     (Join-Path $PSScriptRoot 'CHANGELOG.md'),
     (Join-Path $PSScriptRoot 'LICENSE'),
@@ -111,7 +110,6 @@ try {
         }
     }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/PSAITerminal.dll') -Destination (Join-Path $stage 'bin/PSAITerminal.dll') -Force
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'bin/PSAITerminal.PowerShell7.dll') -Destination (Join-Path $stage 'bin/PSAITerminal.PowerShell7.dll') -Force
     foreach ($helpCulture in @('zh-CN','en-US')) {
         $helpSource = Join-Path $PSScriptRoot $helpCulture
         if (Test-Path -LiteralPath $helpSource -PathType Container) {

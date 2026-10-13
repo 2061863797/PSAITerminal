@@ -79,8 +79,6 @@ function New-AIDefaultConfig {
         }
         integrations = [ordered]@{
             enterRouting = $true
-            feedbackProvider = $true
-            predictor = $false
         }
         execution = [ordered]@{
             maxAgentSteps = 12
@@ -243,7 +241,7 @@ function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
     foreach ($name in @('colorEnabled')) {
         if ($Candidate.appearance[$name] -isnot [bool]) { throw "外观配置 '$name' 必须是布尔值。" }
     }
-    foreach ($name in @('enterRouting','feedbackProvider','predictor')) {
+    foreach ($name in @('enterRouting')) {
         if ($Candidate.integrations[$name] -isnot [bool]) { throw "集成配置 '$name' 必须是布尔值。" }
     }
     if ($Candidate.activeSession -and ([string]$Candidate.activeSession) -notmatch '^[a-fA-F0-9]{32}$') {

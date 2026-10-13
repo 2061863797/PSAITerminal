@@ -119,7 +119,7 @@ jobs:
       - name: 检查 NuGet 已知漏洞
         shell: pwsh
         run: |
-          foreach ($projectPath in @('./src/PSAITerminal.csproj','./src/PowerShell7/PSAITerminal.PowerShell7.csproj')) {
+          foreach ($projectPath in @('./src/PSAITerminal.csproj')) {
             $auditJson = & dotnet list $projectPath package --vulnerable --include-transitive --format json
             if ($LASTEXITCODE -ne 0) { throw "NuGet 漏洞查询失败：$projectPath" }
             $audit = ($auditJson -join "`n") | ConvertFrom-Json
@@ -182,8 +182,6 @@ jobs:
         run: |
           dotnet format ./src/PSAITerminal.csproj --verify-no-changes --no-restore
           if ($LASTEXITCODE -ne 0) { throw "核心项目格式检查失败：$LASTEXITCODE" }
-          dotnet format ./src/PowerShell7/PSAITerminal.PowerShell7.csproj --verify-no-changes --no-restore
-          if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成项目格式检查失败：$LASTEXITCODE" }
           dotnet format ./tools/InteractiveSmoke/InteractiveSmoke.csproj --verify-no-changes
           if ($LASTEXITCODE -ne 0) { throw "ConPTY 项目格式检查失败：$LASTEXITCODE" }
 
@@ -233,7 +231,6 @@ jobs:
             'PSAITerminal.psm1'
             'PSAIStorageSafety.ps1'
             'bin/PSAITerminal.dll'
-            'bin/PSAITerminal.PowerShell7.dll'
             'README.md'
             'CHANGELOG.md'
             "docs/acceptance-$env:PSAI_VERSION.md"
@@ -257,8 +254,6 @@ jobs:
           }
           $assembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.dll'))
           if ($assembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "程序集版本不一致：$($assembly.Version)" }
-          $integrationAssembly = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $package 'bin/PSAITerminal.PowerShell7.dll'))
-          if ($integrationAssembly.Version -ne [version]"$env:PSAI_VERSION.0") { throw "集成程序集版本不一致：$($integrationAssembly.Version)" }
           $galleryPackage = Resolve-Path "./out/PSAITerminal.$env:PSAI_RELEASE_LABEL.nupkg"
           @($archive, $galleryPackage) | ForEach-Object {
             $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_

@@ -12,7 +12,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
 $projectFile = Join-Path $projectRoot 'src/PSAITerminal.csproj'
-$powerShell7ProjectFile = Join-Path $projectRoot 'src/PowerShell7/PSAITerminal.PowerShell7.csproj'
 $sourceManifest = Join-Path $projectRoot 'module/PSAITerminal.psd1'
 $releaseVersion = ([version](Import-PowerShellDataFile -LiteralPath $sourceManifest).ModuleVersion).ToString()
 $releaseLabel = if ($Prerelease) { "$releaseVersion-$Prerelease" } else { $releaseVersion }
@@ -33,19 +32,14 @@ $previousRoot = $null
 if ($Restore) {
     dotnet restore $projectFile
     if ($LASTEXITCODE -ne 0) { throw "依赖恢复失败，退出码：$LASTEXITCODE" }
-    dotnet restore $powerShell7ProjectFile
-    if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成依赖恢复失败，退出码：$LASTEXITCODE" }
 }
 
 try {
     dotnet build $projectFile --configuration $Configuration --no-restore
     if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码：$LASTEXITCODE" }
-    dotnet build $powerShell7ProjectFile --configuration $Configuration --no-restore
-    if ($LASTEXITCODE -ne 0) { throw "PowerShell 7 集成编译失败，退出码：$LASTEXITCODE" }
 
     New-Item -ItemType Directory -Path $binaryDirectory -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $projectRoot "src/bin/$Configuration/netstandard2.0/PSAITerminal.dll") -Destination $binaryDirectory -Force
-    Copy-Item -LiteralPath (Join-Path $projectRoot "src/PowerShell7/bin/$Configuration/net8.0/PSAITerminal.PowerShell7.dll") -Destination $binaryDirectory -Force
     $publishFiles = [ordered]@{
         'module/PSAITerminal.psd1' = 'PSAITerminal.psd1'
         'module/PSAIStorageSafety.ps1' = 'PSAIStorageSafety.ps1'
@@ -115,8 +109,6 @@ try {
     if ($manifestPrerelease -ne [string]$Prerelease) { throw "发布清单预览标签不正确：$manifestPrerelease" }
     $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.dll')).Version
     if ($assemblyVersion -ne [version]"$releaseVersion.0") { throw "程序集版本不正确：$assemblyVersion" }
-    $integrationAssemblyVersion = [Reflection.AssemblyName]::GetAssemblyName((Join-Path $binaryDirectory 'PSAITerminal.PowerShell7.dll')).Version
-    if ($integrationAssemblyVersion -ne [version]"$releaseVersion.0") { throw "PowerShell 7 集成程序集版本不正确：$integrationAssemblyVersion" }
 
     if (Test-Path -LiteralPath $outputRoot) {
         if (-not (Test-Path -LiteralPath $outputRoot -PathType Container)) { throw "输出路径不是目录：$outputRoot" }

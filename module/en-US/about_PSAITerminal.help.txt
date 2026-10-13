@@ -36,8 +36,6 @@ SHORTCUTS
     F6    Cycle Off, AI, and Auto.
     F7    Explain the most recent command and its result.
     On some laptops, hold Fn together with the function key.
-    Windows PowerShell 5.1 does not expose the PowerShell 7 predictor and feedback APIs;
-    diagnostics report them as unsupported while all other features remain available.
 
 DIAGNOSTICS
     Test-PSAIConfiguration checks installation, configuration, credentials, endpoint,

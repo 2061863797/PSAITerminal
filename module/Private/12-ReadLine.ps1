@@ -285,36 +285,6 @@ function Unregister-AIPSReadLineIntegration {
     $script:PSReadLineIntegrated = $false
 }
 
-function Enable-PSAIPredictor {
-    [CmdletBinding()] param()
-    if (-not $script:OfficialIntegrationAvailable) {
-        throw '当前宿主不支持 PowerShell 预测器；请在 PowerShell 7.4 或更高版本中使用此功能。'
-    }
-    Invoke-AIConfigMutation { $script:Config.integrations.predictor = $true }
-    try {
-        [PSAITerminal.AITerminalOfficialIntegration]::RegisterPredictor()
-        $script:PredictorEnabled = $true
-    } catch {
-        Invoke-AIConfigMutation { $script:Config.integrations.predictor = $false }
-        throw
-    }
-}
-
-function Disable-PSAIPredictor {
-    [CmdletBinding()] param()
-    if (-not $script:OfficialIntegrationAvailable) {
-        throw '当前宿主不支持 PowerShell 预测器；共享配置未被修改。'
-    }
-    [PSAITerminal.AITerminalOfficialIntegration]::UnregisterPredictor()
-    $script:PredictorEnabled = $false
-    try { Invoke-AIConfigMutation { $script:Config.integrations.predictor = $false } }
-    catch {
-        [PSAITerminal.AITerminalOfficialIntegration]::RegisterPredictor()
-        $script:PredictorEnabled = $true
-        throw
-    }
-}
-
 function Get-AIShortcutStatus {
     $definitions = @(
         [pscustomobject]@{Action='交给 AI';Key=[string]$script:Config.shortcuts.forceAI;Expected='PSAIForceAI'},

@@ -13,21 +13,16 @@ function Get-PSAIIntegrationStatus {
     $shortcutText = ($shortcuts | ForEach-Object { '{0} {1}' -f $_.Key,$(if($_.Active){'✓'}else{'未启用'}) }) -join '；'
     $inputRouting = if (-not [bool]$script:Config.integrations.enterRouting) { '关闭' }
         elseif ($script:BoundKeys.Contains('Enter')) { '已启用' } else { '未启用' }
-    $prediction = if (-not $script:OfficialIntegrationAvailable) { '宿主不支持' }
-        elseif (-not [bool]$script:Config.integrations.predictor) { '关闭' }
-        elseif (Test-AIOfficialPredictorRegistered) { '已启用' } else { '注册失败' }
+
     [pscustomobject]@{
         Version = $module.Version.ToString()
         HostEdition = $script:HostEdition
         HostVersion = $script:HostVersion.ToString()
-        OfficialIntegrationSupported = $script:OfficialIntegrationAvailable
         Mode = [string]$script:Config.mode
         Model = if ($script:Config.activeModel) { [string]$script:Config.activeModel } else { '未配置' }
         InputRouting = $inputRouting
         Shortcuts = $shortcutText
-        Prediction = $prediction
-        FailureFeedback = if (-not $script:OfficialIntegrationAvailable) { '宿主不支持' }
-            elseif (Test-AIOfficialFeedbackRegistered) { '已启用' } else { '未启用' }
+
         ProfileAutoLoad = if (Test-AIProfileIntegration) { '已启用' } else { '未启用' }
         ModulePath = $module.Path
     }
@@ -43,7 +38,7 @@ function Test-PSAIConfiguration {
     $module = $ExecutionContext.SessionState.Module
     $platform = [Environment]::OSVersion.VersionString
     & $add '操作系统' $script:IsWindowsPlatform $platform $(if($script:IsWindowsPlatform){''}else{'当前发布仅支持 Windows'})
-    & $add '官方预测/反馈集成' $(if($script:OfficialIntegrationAvailable){$true}else{$null}) $(if($script:OfficialIntegrationAvailable){'可用'}else{'当前宿主不支持（核心功能不受影响）'}) $(if($script:OfficialIntegrationAvailable){''}else{'如需此功能，请使用 PowerShell 7.4 或更高版本'})
+
     $secretStoreAvailable = [PSAITerminal.PlatformCredentialStore]::IsAvailable
     $secretStoreName = [PSAITerminal.PlatformCredentialStore]::BackendName
     $secretStoreAction = if ($secretStoreAvailable) { '' } else { '使用 -SessionOnly' }
@@ -243,7 +238,6 @@ function Uninstall-PSAITerminal {
     }
     Unregister-AIPSReadLineIntegration
     Unregister-AIPromptIntegration
-    if ($script:OfficialIntegrationAvailable) { [PSAITerminal.AITerminalOfficialIntegration]::UnregisterAll() }
     [Environment]::SetEnvironmentVariable("__PSAI_SESSION_PID_$PID", $null, 'Process')
     Assert-PSAIModuleRemoval $normalizedPath
     try {

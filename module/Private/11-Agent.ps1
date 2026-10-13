@@ -727,7 +727,6 @@ function Complete-PSAIToolExecution {
         Command=[string]$proposal.command;Succeeded=$Succeeded;Output=$safeOutput
         Error=if($Succeeded){$null}else{$safeOutput};Source='AI';CompletedUtc=[DateTime]::UtcNow;RunId=$RunId;StepId=$StepId
     }
-    Invoke-AIOfficialAddPrediction ([string]$proposal.command)
     Add-AISessionTurn 'tool' "命令：$($proposal.command)`n状态：$(if($Succeeded){'成功'}else{'失败'})`n输出：$safeOutput" 'tool_result' @{
         runId=$RunId;stepId=$StepId;succeeded=$Succeeded;command=[string]$proposal.command;output=$safeOutput
     } | Out-Null
@@ -864,7 +863,7 @@ function Invoke-PSAI {
 function Show-PSAIResultExplanation {
     [CmdletBinding()] param()
     Update-AILastSubmittedFromHistory
-    $feedback = Get-AIOfficialFeedback
+    $feedback = $null
     if (-not $script:LastCommandResult -and -not $script:LastSubmittedCommand -and -not $feedback) {
         Write-Warning '当前会话还没有最近命令。'; return
     }

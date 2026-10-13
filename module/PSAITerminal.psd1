@@ -20,7 +20,6 @@
         'Start-PSAIRun', 'Get-PSAIRun', 'Resume-PSAIRun', 'Resolve-PSAIRun', 'Stop-PSAIRun',
         'Start-PSAIToolExecution', 'Complete-PSAIToolExecution', 'Start-PSAIAutoFallback',
         'Invoke-PSAI', 'Invoke-PSAIAutoCompletion', 'Show-PSAIResultExplanation',
-        'Enable-PSAIPredictor', 'Disable-PSAIPredictor',
         'Get-PSAIIntegrationStatus', 'Test-PSAIConfiguration',
         'Install-PSAIProfileIntegration', 'Uninstall-PSAIProfileIntegration',
         'Uninstall-PSAITerminal', 'Show-AICliHelp'
