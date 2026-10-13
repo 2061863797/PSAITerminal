@@ -96,7 +96,7 @@ jobs:
             './module/PSAITerminal.psm1'
             './module/PSAIStorageSafety.ps1'
           )
-          $targets += @(Get-ChildItem ./tests -Filter '*.ps1' -File | ForEach-Object FullName)
+          $targets += @(Get-ChildItem ./module/Private, ./tests, ./tests/suites -Filter '*.ps1' -File | ForEach-Object FullName)
           $issues = foreach ($target in $targets) {
             Invoke-ScriptAnalyzer -Path $target -Settings ./.psscriptanalyzer.psd1
           }
@@ -201,6 +201,7 @@ jobs:
             './tests/host-probe.ps1'
             './tests/parse.ps1'
           )
+          $scripts += @(Get-ChildItem ./module/Private, ./tests/suites -Filter '*.ps1' -File | ForEach-Object FullName)
           foreach ($script in $scripts) {
             $tokens = $null
             $errors = $null
@@ -235,7 +236,7 @@ jobs:
             'bin/PSAITerminal.PowerShell7.dll'
             'README.md'
             'CHANGELOG.md'
-            'docs/acceptance-1.0.4.md'
+            "docs/acceptance-$env:PSAI_VERSION.md"
             'LICENSE'
             'Install-PSAITerminal.ps1'
             'Uninstall-PSAITerminal.ps1'

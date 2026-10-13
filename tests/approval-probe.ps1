@@ -1,11 +1,8 @@
 ﻿#requires -Version 5.1
 $ErrorActionPreference = 'Stop'
-$tokens=$null; $errors=$null
-$ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../module/PSAITerminal.psm1'), [ref]$tokens, [ref]$errors)
-if ($errors.Count) { throw '模块解析失败。' }
+. (Join-Path $PSScriptRoot 'common.ps1')
 foreach ($name in @('Get-AIApprovalDigest','Remove-AIProposalApproval','Assert-AIProposalExplanation','Update-AIProposalExplanation')) {
-    $node = $ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}, $false)
-    . ([scriptblock]::Create($node.Extent.Text))
+    . ([scriptblock]::Create((Get-PSAISourceFunctionText $name)))
 }
 function Test-AIMapContains($Map, $Key) { $Map.Contains($Key) }
 function Get-AIActiveModel { @{} }

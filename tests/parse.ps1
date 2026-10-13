@@ -19,8 +19,13 @@ $files = @(
     'tests/approval-probe.ps1',
     'tests/reliability.ps1',
     'tests/hardening.ps1',
-    'tests/resources.ps1'
+    'tests/resources.ps1',
+    'tests/common.ps1'
 )
+foreach ($directory in @('module/Private', 'tests/suites')) {
+    $files += @(Get-ChildItem -LiteralPath (Join-Path $Root $directory) -Filter '*.ps1' -File |
+        ForEach-Object { "$directory/$($_.Name)" })
+}
 
 foreach ($relativePath in $files) {
     $path = Join-Path $Root $relativePath

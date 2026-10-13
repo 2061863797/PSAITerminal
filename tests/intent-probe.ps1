@@ -28,15 +28,8 @@ foreach ($case in $cases) {
     if ($actual -ne $case[1]) { throw "意图分流错误：$($case[0]) => $actual" }
 }
 # 仅加载待测函数，不初始化模块，不接触真实配置或凭据。
-$tokens = $null; $errors = $null
-$ast = [Management.Automation.Language.Parser]::ParseFile(
-    (Join-Path $PSScriptRoot '../module/PSAITerminal.psm1'), [ref]$tokens, [ref]$errors)
-if ($errors.Count) { throw '模块语法解析失败。' }
-$functionAst = $ast.Find({ param($node)
-    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -eq 'ConvertTo-AIIntentInvocationLine'
-}, $false)
-. ([scriptblock]::Create($functionAst.Extent.Text))
+. (Join-Path $PSScriptRoot 'common.ps1')
+. ([scriptblock]::Create((Get-PSAISourceFunctionText 'ConvertTo-AIIntentInvocationLine')))
 function Get-AILanguage { 'zh-CN' }
 function Test-AIAutoRoute($Line) { $false }
 function New-AIPendingInvocationLine($Text) { $script:pendingCount++; $Text }

@@ -48,12 +48,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot "src/PowerShell7/bin/$Configuration/net8.0/PSAITerminal.PowerShell7.dll") -Destination $binaryDirectory -Force
     $publishFiles = [ordered]@{
         'module/PSAITerminal.psd1' = 'PSAITerminal.psd1'
-        'module/PSAITerminal.psm1' = 'PSAITerminal.psm1'
         'module/PSAIStorageSafety.ps1' = 'PSAIStorageSafety.ps1'
         'LICENSE' = 'LICENSE'
         'README.md' = 'README.md'
         'CHANGELOG.md' = 'CHANGELOG.md'
-        'docs/acceptance-1.0.4.md' = 'docs/acceptance-1.0.4.md'
+        "docs/acceptance-$releaseVersion.md" = "docs/acceptance-$releaseVersion.md"
         'Install-PSAITerminal.ps1' = 'Install-PSAITerminal.ps1'
         'Uninstall-PSAITerminal.ps1' = 'Uninstall-PSAITerminal.ps1'
     }
@@ -64,6 +63,33 @@ try {
         [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destinationPath))
         Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
     }
+    # 源码按职责拆在 module/Private；发布版按文件名顺序内联为单个 psm1，发布文件集合保持不变。
+    $moduleSourcePath = Join-Path $projectRoot 'module/PSAITerminal.psm1'
+    $moduleText = [IO.File]::ReadAllText($moduleSourcePath, [Text.Encoding]::UTF8).Replace("`r`n", "`n")
+    $loaderMatches = [regex]::Matches($moduleText, '(?ms)^# <PSAI:PRIVATE-BEGIN>\n.*?^# <PSAI:PRIVATE-END>\n')
+    if ($loaderMatches.Count -ne 1) { throw '无法唯一定位模块源码中的 Private 加载段。' }
+    $privateFiles = @(Get-ChildItem -LiteralPath (Join-Path $projectRoot 'module/Private') -Filter '*.ps1' -File | Sort-Object Name)
+    if ($privateFiles.Count -eq 0) { throw '缺少 module/Private 源文件。' }
+    $inlinedText = ($privateFiles | ForEach-Object {
+        $privateText = [IO.File]::ReadAllText($_.FullName, [Text.Encoding]::UTF8).Replace("`r`n", "`n").TrimEnd("`n")
+        "#region Private/$($_.Name)`n$privateText`n#endregion`n"
+    }) -join "`n"
+    $moduleText = $moduleText.Remove($loaderMatches[0].Index, $loaderMatches[0].Length).Insert($loaderMatches[0].Index, $inlinedText)
+    $modulePath = Join-Path $stagingRoot 'PSAITerminal.psm1'
+    [IO.File]::WriteAllText($modulePath, $moduleText, [Text.UTF8Encoding]::new($true))
+    $parseErrors = $null
+    $moduleAst = [Management.Automation.Language.Parser]::ParseFile($modulePath, [ref]$null, [ref]$parseErrors)
+    if (@($parseErrors).Count -gt 0) { throw "合并后的模块存在语法错误：$($parseErrors | Out-String)" }
+    $expectedFunctions = @(@($moduleSourcePath) + @($privateFiles.FullName) | ForEach-Object {
+        [Management.Automation.Language.Parser]::ParseFile($_, [ref]$null, [ref]$null).FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false).Name
+    })
+    $actualFunctions = @($moduleAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false).Name)
+    $duplicateFunctions = @($expectedFunctions | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
+    if ($duplicateFunctions.Count -gt 0) { throw "模块源码存在重名函数：$($duplicateFunctions -join ', ')" }
+    if ((@($expectedFunctions | Sort-Object) -join "`n") -cne (@($actualFunctions | Sort-Object) -join "`n")) {
+        throw '合并后的模块函数集合与源码不一致。'
+    }
+
     foreach ($helpCulture in @('zh-CN','en-US')) {
         $helpSource = Join-Path $projectRoot "module/$helpCulture"
         if (Test-Path -LiteralPath $helpSource) {

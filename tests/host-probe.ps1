@@ -112,7 +112,7 @@ try {
 } finally { $sendCancellation.Dispose(); $sendRequest.Dispose(); $sendClient.Dispose() }
 
 function Read-ProbeText([string]$Path) {
-    & $module { param($probePath) Read-AITextFile $probePath } $Path
+    & $module { param($probePath) Read-PSAITextFile $probePath } $Path
 }
 
 $utf8ProbePath = Join-Path $DataPath 'utf8-no-bom.txt'
