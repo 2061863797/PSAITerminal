@@ -5,10 +5,14 @@ $helpNames = @((Get-Help about_PSAITerminal -ErrorAction Stop).Name)
 Assert-True ($helpNames -contains 'about_PSAITerminal') '发布包必须提供可发现的简体中文帮助主题。'
 $readme = [IO.File]::ReadAllText((Join-Path $moduleOutput 'README.md'), [Text.Encoding]::UTF8)
 $moduleSource = [IO.File]::ReadAllText((Join-Path $moduleOutput 'PSAITerminal.psm1'), [Text.Encoding]::UTF8)
-Assert-Match $readme '\| Windows \| `<Documents>/PowerShell/PSAITerminal` \| `%LOCALAPPDATA%/PowerShell/PSAITerminal` \|' 'Windows 文档必须使用实际的 PSAITerminal 配置目录名。'
-Assert-True $readme.Contains("当前 ``$releaseVersion`` 发布仅支持 Windows PowerShell 5.1") '文档必须明确当前版本的双宿主 Windows 支持范围。'
-Assert-Equal $false $readme.Contains('适用于 Windows、Linux 和 macOS') '文档不能把未验收的平台列为当前支持范围。'
-Assert-Match $readme '不是自动回滚功能' '文档必须明确说明 AI 的回滚提示不会自动恢复系统状态。'
+Assert-True ($readme.Contains('`<Documents>/PowerShell/PSAITerminal`') -and $readme.Contains('`%LOCALAPPDATA%/PowerShell/PSAITerminal`')) '文档必须使用实际的配置与会话目录。'
+Assert-True ($readme.Contains('Windows PowerShell 5.1') -and $readme.Contains('仅限 Windows')) '文档必须明确双宿主 Windows 支持范围。'
+Assert-Equal $false ($readme -match 'Linux|macOS') '文档不能把未验收的平台列为支持范围。'
+Assert-Match $readme '不是沙箱' '文档必须说明命令以当前用户权限执行。'
+$exportedCommands = @((Get-Module PSAITerminal).ExportedFunctions.Keys)
+foreach ($documented in @([regex]::Matches($readme, '\b[A-Z][a-z]+-PSAI\w+\b(?!\.ps1)') | ForEach-Object Value | Sort-Object -Unique)) {
+    Assert-True ($exportedCommands -contains $documented) "README 引用了不存在的命令：$documented"
+}
 Assert-Equal $false $moduleSource.Contains('foreach ($payload in (Read-AIStreamPayloads') '流式响应不能先在括号中完整缓冲。'
 
 $credentialTarget = 'PSAITerminal/Test/' + [guid]::NewGuid().ToString('N')

@@ -2,17 +2,28 @@
 
 ## 未发布
 
-- 统一两个卸载入口的只读预检、绝对路径和归属限制；拒绝受保护目录与重解析点，Force 遵守 WhatIf/Confirm，删除失败明确报错。
-- Purge 只清理已确认的数据及配置模型对应的凭据，保留无关文件；凭据失败保留配置，返回实际 CredentialsPurged 状态。独立凭据子进程退出后再删除模块文件；子进程按原始字节读取目标列表，兼容 5.1 在 UTF-8 控制台下写入的 BOM。
-- 新终端、新建及切换会话不再隐式修改共享配置；当前会话取自进程状态，显式配置修改仍校验修订号。
-- AI 普通输入全部先交给 AI；Enter/F2 支持不完整代码的一次提交和原文历史，F3/Auto/Off 保留原生续行。
-- 原生、JSON、YAML 提议统一要求完整说明与计划；无效首计划不固定到 Run。拒绝过长或会被脱敏改写的命令，编辑说明接受完整单 JSON 代码块。
-- 修正 Auto 的真实原生退出码、礼貌概念咨询与标准只读别名；宿主重绑定仍按实际命令分级。
-- Win32 DACL 失败保留错误码并释放锁；流式单行在读取过程中限长，正文失败、取消与超限均释放资源。
-- 静态检查覆盖生产和测试脚本，新增并发、凭据、资源及 ConPTY 回归。源码版本保持 1.0.4，ConPTY 保持 net10.0。
-- 模块卸载和移除 Profile 集成时不再在原区块位置残留空行，也不再改写不含自动加载区块的 Profile。
-- 内部重构，无功能变化：模块源码按职责拆分到 `module/Private`，发布构建时内联为单个 psm1，发布包文件集合不变；模块与独立安装、卸载脚本共用 `PSAIStorageSafety.ps1` 中的文件读写与 Profile 处理函数；回归测试按主题拆分到 `tests/suites`。
+### 不兼容变更
 
+- Agent 改为内存中的单循环：模型提议命令只需 `command` 和 `purpose`，确认后在当前会话执行，结果交回模型继续，直到模型给出文字结论。移除 Run 持久化、计划/步骤角色/恢复阶段和审批摘要，以及 `Start-PSAIRun`、`Get-PSAIRun`、`Resume-PSAIRun`、`Resolve-PSAIRun`、`Stop-PSAIRun`、`Start-PSAIToolExecution`、`Complete-PSAIToolExecution`、`Start-PSAIAutoFallback`、`Invoke-PSAIAutoCompletion`、`Show-PSAIResultExplanation`、`Enable-PSAIPredictor`、`Disable-PSAIPredictor`。导出命令从 37 个减为 25 个。
+- 模型协议只保留 OpenAI 兼容与 Anthropic。OpenAIResponses、GeminiNative、Ollama 配置在首次加载时自动迁移到 OpenAI 兼容接口，协议专属参数被丢弃并提示一次。
+- 配置升级到 schemaVersion 3。旧版本模块读到新配置会备份原文件并进入 Off 模式；请同时升级 5.1 和 7 中的安装（`Install-PSAITerminal.ps1 -TargetHost Both`）。
+- 删除 PowerShell 7 专用的预测器与反馈程序集，发布包只含一个 DLL；配置项 `integrations.predictor`、`integrations.feedbackProvider`、`execution.contextBudgetPercent`、`execution.recentTurns` 被移除。
+- 会话上下文改为按模型窗口截取最近轮次，不再调用模型生成摘要。
+
+### 改进与修复
+
+- Auto 只区分“可执行的 PowerShell”和“其他输入”，其余交给模型决定回答还是提议命令。修复“磁盘空间还剩多少”等不含触发词的问题和拼写错误的命令只得到“请重新输入”。
+- 风险分级按命令名重写：查询类与 `ipconfig`、`ping`、`git status` 等只读命令为低风险，系统模块中的 CIM 函数不再误判为高风险；高风险只用于删除、停止、执行任意代码、注册表与磁盘等操作。
+- 审批菜单改为 `[Y]执行 [A]本会话允许 [E]放入命令行 [N]拒绝`，拒绝时可附反馈让模型重新提议；新增 `Set-PSAITerminalOption -AutoApprove` 免确认列表，高风险命令始终需要确认。
+- Auto 不再改写用户命令：修复 `using` 语句报错、robocopy 等以非零退出码表示成功的命令被当作失败并自动请求 AI。命令失败后提示 F7，由用户按 F7 诊断修复。
+- Prompt 包装在第一条语句捕获 `$?`，修复 oh-my-posh、starship 等提示符的失败状态永远显示成功。
+- 每一轮都流式显示模型文字；模型请求失败时不再换格式重复请求。
+- 端点已含版本段（如 `/api/v3`、`/v1beta/openai`）时不再追加 `/v1`；本机地址可以不配置 API Key；新增模型菜单改为服务商预设。
+- 统一两个卸载入口的只读预检、绝对路径和归属限制；拒绝受保护目录与重解析点，Force 遵守 WhatIf/Confirm，删除失败明确报错。Purge 只清理已确认的数据及配置模型对应的凭据；凭据子进程按原始字节读取目标列表，兼容 5.1 在 UTF-8 控制台下写入的 BOM。
+- 模块卸载和移除 Profile 集成时不再残留空行，也不再改写不含自动加载区块的 Profile。
+- 新终端、新建及切换会话不再隐式修改共享配置；显式配置修改仍校验修订号。
+- Win32 DACL 失败保留错误码并释放锁；流式单行在读取过程中限长，正文失败、取消与超限均释放资源。
+- 内部结构：模块源码按职责拆分到 `module/Private`，构建时合并为单个 psm1；安装、卸载脚本与模块共用 `PSAIStorageSafety.ps1`；回归测试按主题拆分到 `tests/suites`。
 ## 1.0.4 - 2026-09-12
 
 - 修复中文意图边界：咨询无工具，操作进入审批，未知输入本地澄清。

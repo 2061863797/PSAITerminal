@@ -2,105 +2,88 @@
     about_PSAITerminal
 
 SHORT DESCRIPTION
-    Use local AI chat, command assistance, and multi-step Agent features in official PowerShell.
+    An AI assistant inside PowerShell: ask questions or describe tasks in natural language,
+    and approve each command the AI proposes before it runs.
 
 PLATFORMS
-    Windows PowerShell 5.1 (x64/x86) and PowerShell 7.4 or later on Windows.
-    Linux and macOS are unsupported; their implementations have been removed.
+    Windows PowerShell 5.1 (x64/x86) and PowerShell 7.4 or later on Windows only.
 
 GETTING STARTED
-    Type ai and press Enter to open settings, add a model, and select it.
-    Type ai <question> to ask the active model explicitly in any mode.
+    Type ai and press Enter to open settings, then add a model under Models.
+    Type ai mode Auto to switch to the recommended mode (new installs start in Off).
+    Type ai <text> in any mode to send text to the AI explicitly.
 
 MODES
-    Off   Enter always executes PowerShell normally.
-    AI    All ordinary input goes to AI first, including valid Shell and incomplete code.
-    Auto  Deterministic PowerShell commands run directly; natural-language or failed commands go to AI.
+    Auto  Runnable PowerShell commands run unchanged. Natural language, misspelled
+          commands, and syntax errors go to the AI.
+    AI    All input goes to the AI, including valid commands and incomplete code.
+    Off   Plain PowerShell.
+    Auto does not guess whether you want an answer or an action; the model decides.
+    Incomplete code keeps native continuation in Auto and Off. An English sentence that
+    starts with a command name (for example "where is ...") runs as a command; use F2.
 
-INPUT
-    Enter/F2 submits incomplete AI input once and retains its original text.
-    Auto/Off/F3 keep native continuation; Shift+Enter keeps multiline editing.
-    Explicit consultation has no tools or Run. Ambiguous Auto input is clarified locally.
+APPROVAL
+    For each proposed command the purpose, full command, and local risk are shown:
+        [Y] Run  [A] Always allow <names> this session  [E] Edit in prompt  [N] Reject
+    Y   Run. Enter defaults to Y for Low and Medium risk. High risk has no default and
+        asks for a second confirmation.
+    A   Run and skip approval for the same command names for the rest of this session.
+        Not offered for High risk.
+    E   Do not run; place the command in the next input line for you to edit and run.
+    N   Reject. Optionally tell the AI what to do instead; press Enter to cancel the task.
+    Commands run in your current session, so location, variables, and functions persist.
+    Output is returned to the model, which continues or finishes in a sentence or two.
+    One task runs at most 12 commands (Set-PSAITerminalOption -MaxAgentSteps).
 
-SESSIONS
-    A new terminal has its own session. Importing, creating, or switching sessions does
-    not write shared configuration. Explicit configuration changes still check revisions.
+RISK
+    Risk is computed locally; model claims are ignored.
+    Low     Queries (Get-*, Test-*, Select-*, ...), cd, ipconfig, ping, whoami, git status/log/diff.
+    High    Remove/Stop/Uninstall/Clear commands, rm, del, taskkill, Invoke-Expression,
+            download-and-run, nested cmd/powershell, registry, service and disk changes,
+            git clean, git reset --hard, forced push.
+    Medium  Everything else, including writes, installs, starting programs, unknown commands.
+    Aliases and functions redefined in the session are classified by their real target.
 
-LANGUAGE
-    The default interface language is English. Type ai, select Language / 语言,
-    and choose English or Chinese (简体中文). The choice is persisted.
+AUTO-APPROVE
+    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git'
+    Matching Low and Medium commands run without approval. High risk always asks.
+
+FAILURES
+    In Auto and AI mode a failed command shows "Command failed · press F7 to diagnose
+    and fix". F7 asks the AI to explain the cause and propose a fix, which you approve as
+    usual. The AI is never called automatically.
 
 SHORTCUTS
-    F2    Send the current input to AI without pressing Enter first.
-    F3    Execute the current input as PowerShell without pressing Enter first.
+    F2    Send the current input to the AI.
+    F3    Run the current input as PowerShell.
     F6    Cycle Off, AI, and Auto.
-    F7    Explain the most recent command and its result.
+    F7    Diagnose and fix the last command if it failed; otherwise explain it.
     On some laptops, hold Fn together with the function key.
 
-DIAGNOSTICS
-    Test-PSAIConfiguration checks installation, configuration, credentials, endpoint,
-    PSReadLine, and shortcut integration.
-    Test-PSAIConfiguration -Online sends one minimal model request after local checks.
-
-CREDENTIALS
-    API keys are stored in Windows Credential Manager and are not written to JSON.
-    The module first requests machine persistence. In a restricted logon session where
-    Windows returns ERROR_NO_SUCH_LOGON_SESSION (1312), it safely uses a credential
-    scoped to the current logon session instead; it never falls back to plaintext.
+MODELS
+    Choose OpenAI, Anthropic, Google Gemini, DeepSeek, a local service (Ollama, LM Studio),
+    or another OpenAI-compatible service. Everything except Anthropic uses the OpenAI-
+    compatible API. Endpoints that already contain a version segment (/v1, /api/v3) are
+    used as is; otherwise /v1 is appended. Local endpoints may omit the API key.
+    API keys are stored in Windows Credential Manager, never in the JSON configuration.
 
 COMMON COMMANDS
-    Get-PSAIModel
-    Get-PSAISession
-    Get-PSAIRun
-    Set-PSAITerminalMode Off|AI|Auto
-    Uninstall-PSAITerminal
+    ai help | ai clear | ai new <title> | ai mode Off|AI|Auto
+    Get-PSAIModel, Select-PSAIModel, Test-PSAIModel
+    Get-PSAISession, New-PSAISession, Clear-PSAISession
+    Get-PSAITerminalOption, Set-PSAITerminalOption
+    Test-PSAIConfiguration, Get-PSAIIntegrationStatus
+    Uninstall-PSAITerminal [-PurgeUserData]
 
-SAFETY CONFIRMATION
-    AI-generated purpose, expected-result, and side-effect descriptions may be inaccurate.
-    Treat the complete command shown on the approval screen as authoritative.
-    High-risk commands have no Enter-to-execute default and require a second confirmation.
-    All risk levels display purpose, command, expected result, side effects, rollback, and local risk.
-    Approval binds the command, descriptions, plan progression, and Run revision.
-    Editing revokes approval and regenerates four descriptions without tools. Invalid or failed
-    descriptions block approval; edit again or reject. Model-provided risk is not trusted.
-    Rollback text is AI-generated guidance; the module does not automatically back up, undo,
-    or restore system state.
-    Commands run with the current user's permissions in the current PowerShell session, not a sandbox.
-
-RELIABILITY (1.0.4)
-    Consultation requests have no tools. Ambiguous input asks for a complete new request locally.
-    Structured plans determine completion, not task keywords. A successful final step completes
-    without another model request; intermediate steps continue with actual output. Reserve a
-    verification step if the final artifact still needs checking. F7 explains only on request.
-    Run v2 persists the plan, completion condition, step role, result, and Normal/Cleanup/Retry phase.
-    Cleanup success returns to the original step. Cleanup failure pauses until explicit resume.
-    Every cleanup and retry needs approval and counts toward the step limit. No guaranteed recovery
-    or exhaustive side-effect detection is provided. Failed commands display failure, not completion.
-    Completed legacy Runs remain readable. Unfinished legacy Runs must replan and reapprove.
-    Uncertain executions require Resolve-PSAIRun before resuming; they are never automatically replayed.
-
-UNRELEASED HARDENING
-    Native, JSON, and YAML proposals require all description and planning fields. Invalid proposals
-    receive at most one repair; a rejected first plan does not freeze the Run plan.
-    Commands over 16384 characters or changed by masking are rejected. Use variables or credential
-    references instead. Edited descriptions accept only a four-field JSON object, optionally inside
-    one complete JSON fence; extra text and tool calls invalidate approval.
-    Auto preserves the actual native exit code and keeps the previous LASTEXITCODE for pure PowerShell.
-    Streaming line limits are enforced during reading. DACL failures raise the original Win32 error.
+SAFETY
+    Commands run with your permissions in your session; this is not a sandbox.
+    Risk levels and purposes are aids; read the full command before approving.
+    Commands containing literal secrets that masking would change are refused; use
+    variables or credential references instead.
 
 UNINSTALL
-    Both uninstall entries preflight ownership and absolute paths and reject protected directories
-    and reparse points. Force still respects WhatIf and explicit Confirm. Failures raise errors.
-    PurgeUserData deletes verified config/session/Run files and credentials for configured model names
-    only (PSAITerminal/Model/<name>), preserving unrelated files and credentials. Ordinary uninstall
-    keeps credentials. Credential failure preserves configuration for retry.
-    CredentialsPurged is false without Purge, and true only when all requested targets are absent.
-    Loaded Windows DLLs can block built-in removal. Close the terminal and retry the standalone
-    script from pwsh -NoProfile or powershell -NoProfile. Credential cleanup exits before DLL deletion.
-
-NOTES
-    No model is bundled. The first installation starts in Off mode and does not connect automatically.
-    Packages are not Authenticode-signed. For manual installation, verify the SHA-256 published
-    with the official GitHub Release.
-    API keys are never written to JSON. Windows uses Credential Manager.
-    If the platform store is unavailable, SessionOnly can be selected.
+    Uninstall-PSAITerminal removes the module and the profile autoload block and keeps
+    configuration and credentials. -PurgeUserData also deletes verified configuration,
+    sessions, and the PSAITerminal/Model/<name> credentials of configured models only.
+    Both uninstall entries check paths and ownership first. If loaded DLLs block removal,
+    close the terminal and run Uninstall-PSAITerminal.ps1 from pwsh -NoProfile.

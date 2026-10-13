@@ -29,7 +29,7 @@ function Assert-ProbeThrows([scriptblock]$Action, [string]$Pattern, [string]$Mes
 Assert-Probe ($moduleSource -notmatch '\$client\.Send\s*\(') '模块不能调用 Windows PowerShell 5.1 缺失的 HttpClient.Send。'
 Assert-Probe ($moduleSource -notmatch 'ReadLineAsync\s*\(\s*\$CancellationToken') '模块不能调用 Windows PowerShell 5.1 缺失的可取消 ReadLineAsync 重载。'
 Assert-Probe ($moduleSource -notmatch '\.Content\.ReadAsStream\s*\(') '模块不能调用 Windows PowerShell 5.1 缺失的 HttpContent.ReadAsStream。'
-Assert-Probe ($moduleSource -match '\$PSVersionTable\.PSVersion\s*-ge\s*\[version\]\x27?7\.3') 'Agent Harness 必须在 5.1 中跳过 PowerShell 7 专属原生命令错误偏好变量。'
+Assert-Probe ($moduleSource -notmatch '\$PSNativeCommandUseErrorActionPreference\s*=') '模块不能修改用户的原生命令错误偏好，原生失败按退出码判断。'
 
 $status = Get-PSAIIntegrationStatus
 Assert-Probe ($status.HostEdition -eq [string]$PSVersionTable.PSEdition) '集成状态必须报告当前宿主。'
@@ -68,26 +68,26 @@ try {
     $streamContent.Dispose()
 }
 
+# 在当前宿主中运行真实调度脚本：临时替换模块内的 Agent 入口，只执行一条无副作用命令。
 $harnessScript = & $module {
-    New-AITopLevelHarnessScript "[pscustomobject]@{RunId='host-probe';StepId='host-probe';ApprovalDigest=('a'*64);ApprovalRevision=1;Command='Get-Date | Out-Null'}"
-}
-function global:Start-PSAIToolExecution {
-    param($RunId,$StepId,$Command,$ApprovalDigest,[long]$ApprovalRevision)
-    [void]$RunId; [void]$StepId; [void]$Command; [void]$ApprovalDigest; [void]$ApprovalRevision
-}
-function global:Complete-PSAIToolExecution {
-    param($RunId,$StepId,[bool]$Succeeded,$Output,$ExitCode)
-    [void]$ExitCode
-    [void]$RunId; [void]$StepId
-    $script:HostProbeHarnessSuccess = $Succeeded
-    $script:HostProbeHarnessOutput = $Output
+    $script:HostProbeOriginal = @{
+        Start = (Get-Command Start-AIAgent -CommandType Function).ScriptBlock
+        Submit = (Get-Command Submit-AIAgentResult -CommandType Function).ScriptBlock
+    }
+    Set-Item function:script:Start-AIAgent -Value { param($Task) [void]$Task; [pscustomobject]@{Command='Get-Date | Out-Null';OutputLimit=4096} }
+    Set-Item function:script:Submit-AIAgentResult -Value { param($Succeeded, $Output, $ExitCode) [void]$Output; $script:HostProbeResult = @{Succeeded=$Succeeded;ExitCode=$ExitCode}; $null }
+    New-AIAgentHarnessScript 'host-probe'
 }
 try {
     . ([scriptblock]::Create($harnessScript))
-    Assert-Probe ($script:HostProbeHarnessSuccess -eq $true) 'Agent Harness 在当前宿主中未能完成无副作用命令。'
+    $harnessResult = & $module { $script:HostProbeResult }
+    Assert-Probe ($harnessResult.Succeeded -eq $true -and $harnessResult.ExitCode -eq 0) 'Agent 调度脚本在当前宿主中未能完成无副作用命令。'
 } finally {
-    Remove-Item Function:\Start-PSAIToolExecution,Function:\Complete-PSAIToolExecution -ErrorAction SilentlyContinue
-    Remove-Variable HostProbeHarnessSuccess,HostProbeHarnessOutput -Scope Script -ErrorAction SilentlyContinue
+    & $module {
+        Set-Item function:script:Start-AIAgent -Value $script:HostProbeOriginal.Start
+        Set-Item function:script:Submit-AIAgentResult -Value $script:HostProbeOriginal.Submit
+        Remove-Variable HostProbeOriginal,HostProbeResult -Scope Script -ErrorAction SilentlyContinue
+    }
 }
 
 $sendClient = [Net.Http.HttpClient]::new()

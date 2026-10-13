@@ -1,95 +1,80 @@
 ﻿主题
     about_PSAITerminal
 
-简短说明
-    在官方 PowerShell 中使用本地 AI 问答、命令建议和多步骤 Agent。
+简要说明
+    运行在 PowerShell 里的 AI 助手：用自然语言提问或描述任务，AI 提议的每条命令都要你确认后才执行。
 
 平台
-    支持 Windows PowerShell 5.1（x64/x86）和 Windows 上的 PowerShell 7.4 及以上版本。
-    Linux 和 macOS 不受支持，相关实现已从发布代码中移除。
+    仅限 Windows：Windows PowerShell 5.1（x64/x86）和 PowerShell 7.4 及以上。
 
 开始使用
-    输入 ai 并按 Enter，新增并选择模型。
-
-    输入 ai <问题> 并按 Enter，可在任何模式下明确询问 AI。
+    输入 ai 回车打开设置，在“模型配置”中新增模型。
+    输入 ai mode Auto 切换到推荐的 Auto 模式（新安装默认是 Off）。
+    任何模式下都可以用 ai <内容> 显式交给 AI。
 
 模式
-    Off   Enter 始终按 PowerShell 执行。
-    AI    普通输入全部先交给 AI，包括合法 Shell 命令和不完整代码。
-    Auto  明确的命令先执行；无法运行时把原始输入交给 AI。
+    Auto  能直接执行的 PowerShell 命令原样执行；自然语言、拼错的命令和语法错误交给 AI。
+    AI    所有输入都交给 AI，包括合法命令和未写完的代码。
+    Off   普通 PowerShell。
+    Auto 不猜你是想咨询还是想操作，由模型决定直接回答还是提议命令。
+    未写完的代码在 Auto 和 Off 下保持原生续行。以命令名开头的英文句子（如 where is ...）
+    会被当作命令执行，这时用 F2 交给 AI。
 
-输入与会话
-    Enter/F2 将不完整 AI 输入只提交一次并保留原文；Auto/Off/F3 保留原生续行，
-    Shift+Enter 保留多行编辑。明确咨询不携带工具、不创建 Run，Auto 模糊输入在本地澄清。
-    每个终端使用独立会话；导入、新建和切换会话不改写共享配置，显式配置修改仍检查修订号。
+执行确认
+    每条提议的命令都会显示目的、完整命令和本地计算的风险：
+        [Y] 执行  [A] 本会话总是允许 <命令名>  [E] 放入命令行编辑  [N] 拒绝
+    Y   执行。低、中风险直接回车即为 Y；高风险没有默认项，并要求再确认一次。
+    A   执行，并在本次 PowerShell 会话内对同名命令免确认。高风险不提供此选项。
+    E   不执行，把命令放进下一次的输入行，由你修改后自己回车。
+    N   拒绝。可以附一句话告诉 AI 怎么改；直接回车则取消任务。
+    命令在当前会话中执行，目录、变量和函数都会保留。输出交回模型，模型继续下一步或用一两句话结束。
+    单个任务最多执行 12 条命令（Set-PSAITerminalOption -MaxAgentSteps 可调）。
 
-界面语言
-    默认界面语言为 English。输入 ai，选择“语言 / Language”即可切换 English 或简体中文；语言选择会持久化。
+风险等级
+    风险由本地规则计算，不采信模型的判断。
+    Low     查询类（Get-*、Test-*、Select-* 等）、cd、ipconfig、ping、whoami、git status/log/diff。
+    High    删除、停止、卸载、清空类命令，rm、del、taskkill、Invoke-Expression、下载后执行、
+            嵌套 cmd/powershell，注册表、服务、磁盘操作，git clean、git reset --hard、强制推送。
+    Medium  其余命令，包括写文件、安装、启动程序和未知命令。
+    会话中重新绑定的别名和覆盖内置命令的函数，按实际目标重新分级。
+
+免确认列表
+    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git'
+    匹配的中低风险命令不再询问；高风险命令始终需要确认。
+
+失败诊断
+    Auto 和 AI 模式下命令失败后会提示“命令失败 · 按 F7 诊断修复”。按 F7，AI 先说明原因再提议
+    修正命令，同样需要你确认。不会自动调用模型。
 
 快捷键
-    F2    先输入内容，不按 Enter，按 F2 强制交给 AI。
-    F3    先输入命令，不按 Enter，按 F3 强制按 PowerShell 执行。
-    F6    切换 Off、AI、Auto。
-    F7    解释最近一次命令及其结果。
+    F2    把当前输入交给 AI。
+    F3    把当前输入按 PowerShell 执行。
+    F6    在 Off、AI、Auto 之间切换。
+    F7    上一条命令失败时诊断并修复；成功时解释它做了什么。
 
     部分笔记本需要同时按 Fn。运行 Get-PSAIIntegrationStatus 可以确认快捷键是否启用。
 
-诊断
-    Test-PSAIConfiguration
-        检查安装位置、配置、凭据、接口地址、PSReadLine 和快捷键。
-
-    Test-PSAIConfiguration -Online
-        在本地检查之外发送一次最小模型请求。
-
-凭据
-    API Key 保存在 Windows Credential Manager，不写入 JSON。
-    模块默认请求跨登录会话持久化；受限登录会话返回 1312 时，会安全降级为当前登录会话凭据，
-    不会改为明文保存。
+模型
+    可选择 OpenAI、Anthropic、Google Gemini、DeepSeek、本机服务（Ollama、LM Studio）或其他 OpenAI
+    兼容服务。除 Anthropic 外都使用 OpenAI 兼容接口；地址已含版本段（/v1、/api/v3 等）时原样使用，
+    否则自动补 /v1。本机地址可以不填 API Key。
+    API Key 保存在 Windows 凭据管理器中，不写入 JSON 配置。
 
 常用命令
-    Get-PSAIModel
-    Get-PSAISession
-    Get-PSAIRun
-    Set-PSAITerminalMode Off|AI|Auto
-    Uninstall-PSAITerminal
+    ai help | ai clear | ai new <名称> | ai mode Off|AI|Auto
+    Get-PSAIModel、Select-PSAIModel、Test-PSAIModel
+    Get-PSAISession、New-PSAISession、Clear-PSAISession
+    Get-PSAITerminalOption、Set-PSAITerminalOption
+    Test-PSAIConfiguration、Get-PSAIIntegrationStatus
+    Uninstall-PSAITerminal [-PurgeUserData]
 
-安全确认
-    AI 生成的目的、预期和副作用可能不准确，请以确认界面显示的完整命令为准。
-    高风险命令不支持回车默认执行，并要求第二次明确确认。
-    所有风险等级都展示目的、命令、预期、副作用、回滚和本地风险六项。
-    批准与命令、说明、计划推进信息和 Run 修订号绑定；内容变化后必须重新批准。
-    编辑后撤销批准，禁用工具生成四项新说明；失败显示“无法评估”，只能重新编辑或拒绝。
-    回滚内容只是 AI 生成的操作建议；模块不会自动备份、撤销或恢复系统状态。
-    命令使用当前用户权限在当前 PowerShell 会话中执行，不是隔离沙箱。
-
-交互可靠性（1.0.4）
-    咨询请求不携带工具；待澄清输入只显示本地问题，请重新输入完整需求。
-    单步与多步按结构化计划推进，不依赖任务关键词。末步成功直接完成，不追加模型请求。
-    普通步骤只显示步骤完成；如需检查产物，计划必须保留验证步骤。F7 仅主动触发时解释。
-    Run v2 保存计划、完成条件、步骤角色、执行结果，以及正常执行、清理恢复和重试阶段。
-    清理成功回到原步骤，清理失败暂停，等待 ai resume <RunId>。每条清理和重试均需批准，
-    且计入最大步骤数；模块不能检测全部副作用，不保证恢复成功。失败不会显示成功完成文案。
-    旧的已完成 Run 可以查看；旧的未完成 Run 必须重新规划和批准。结果不确定时先执行
-    Resolve-PSAIRun 明确确认是否执行及结果，不能自动重放。
-
-未发布整改
-    原生、正文 JSON 和 YAML 提议要求完整说明、计划及完成字段；最多修复一次，首次无效
-    计划不会固定到 Run。超过 16384 字符或会被脱敏改写的命令直接拒绝，请使用变量或凭据引用。
-    编辑说明仅接受四字段 JSON 对象，允许完整包裹于单个 JSON 代码块；额外文字和工具调用无效。
-    Auto 保留本次真实原生退出码，纯 PowerShell 保留此前 LASTEXITCODE 或未定义状态。
-    流式单行上限在读取中检查；DACL 失败抛出包含原始 Win32 错误码的异常。
+安全说明
+    命令以当前用户权限在当前会话中执行，不是沙箱。
+    风险等级和目的说明只是辅助，确认前请看完整命令。
+    含有会被脱敏规则改写的密钥字面量的命令会被拒绝，请改用变量或凭据引用。
 
 卸载
-    两个入口均先验证绝对路径和模块/数据归属，拒绝受保护目录与重解析点。
-    Force 仍遵守 WhatIf 和显式 Confirm；删除失败报错。普通卸载保留凭据。
-    PurgeUserData 只删除已确认的配置、会话、Run 文件及配置模型名称对应的
-    PSAITerminal/Model/<名称> 凭据，保留无关文件和凭据。凭据失败时保留配置供重试。
-    CredentialsPurged 在未请求 Purge 时为 false，全部目标已删除或不存在时才为 true。
-    Windows 可能占用当前宿主加载的 DLL。内置卸载若报文件删除失败，关闭占用终端，
-    再从 pwsh -NoProfile 或 powershell -NoProfile 运行独立脚本。凭据子进程退出后才删除 DLL。
-
-说明
-    PSAITerminal 不预置模型，首次安装默认为 Off，也不会自动联网。
-    当前包未做 Authenticode 代码签名；手动安装时应核对官方 Release 提供的 SHA-256。
-    API Key 不写入 JSON 配置。Windows 使用 Credential Manager；
-    密钥库不可用时可显式选择仅当前会话使用。
+    Uninstall-PSAITerminal 删除模块和 Profile 自动加载区块，保留配置和凭据。-PurgeUserData 同时删除
+    已确认的配置、会话，以及配置中模型对应的 PSAITerminal/Model/<名称> 凭据。
+    两个卸载入口都会先检查路径和归属。已加载的 DLL 无法删除时，关闭终端后在 pwsh -NoProfile 中
+    运行 Uninstall-PSAITerminal.ps1。
