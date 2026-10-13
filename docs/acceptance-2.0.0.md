@@ -1,6 +1,6 @@
 ﻿# 本地手动验收
 
-这是未发布候选。不要覆盖正式安装、Profile 或真实配置。自动测试使用模拟模型，真实模型和真实终端体验仍需按下面的清单验收。
+这是 2.0.0 的手动验收清单。不要覆盖正式安装、Profile 或真实配置。自动测试使用模拟模型，真实模型和真实终端体验仍需按下面的清单验收。
 
 ## 打开隔离终端
 
@@ -10,7 +10,7 @@
 $testRoot = Join-Path $env:TEMP ('PSAI.Manual.' + [guid]::NewGuid().ToString('N'))
 $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'config'
 $env:PSAI_DATA_HOME = Join-Path $testRoot 'data'
-$package = 'C:\Users\LXT\Desktop\PSAITerminal\out\PSAITerminal-1.0.4'
+$package = 'C:\Users\LXT\Desktop\PSAITerminal\out\PSAITerminal-2.0.0'
 $moduleRoot = Join-Path $testRoot 'modules'
 New-Item -ItemType Directory -Path $moduleRoot,(Join-Path $testRoot 'profile') -Force | Out-Null
 Copy-Item -LiteralPath $package -Destination (Join-Path $moduleRoot 'PSAITerminal') -Recurse

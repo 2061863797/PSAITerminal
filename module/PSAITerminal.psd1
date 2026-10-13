@@ -1,6 +1,6 @@
 ﻿@{
     RootModule = 'PSAITerminal.psm1'
-    ModuleVersion = '1.0.4'
+    ModuleVersion = '2.0.0'
     GUID = 'ac841eb9-b63e-4dd0-9974-c6e7ca4a1682'
     Author = 'LXT'
     CompanyName = 'PSAITerminal'
@@ -30,7 +30,7 @@
             Tags = @('AI', 'Terminal', 'PowerShell', 'PSReadLine', 'Windows')
             LicenseUri = 'https://opensource.org/license/mit'
             ProjectUri = 'https://github.com/2061863797/PSAITerminal'
-            ReleaseNotes = '1.0.4：咨询、操作、待澄清三类路由；结构化计划与完成条件；统一六项审批说明；编辑失效与说明失败关闭；Run v2 恢复阶段和失败诊断。Windows PowerShell 5.1 与 PowerShell 7.4+。'
+            ReleaseNotes = '2.0.0：Agent 改为内存单循环，模型自行决定回答或提议命令；单键确认菜单与免确认列表；风险分级重写；失败后 F7 诊断修复；协议精简为 OpenAI 兼容与 Anthropic 并自动迁移旧配置。不兼容升级，请同时升级 5.1 与 7 中的安装。'
         }
     }
 }

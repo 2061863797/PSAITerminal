@@ -18,7 +18,7 @@ Install-Module -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
 
 PowerShell 7 也可以用 `Install-PSResource -Name PSAITerminal -Repository PSGallery -Scope CurrentUser`。使用 GitHub Release 安装包时运行 `.\Install-PSAITerminal.ps1 -TargetHost Current`（`-TargetHost Both` 同时安装到 5.1 和 7）。
 
-当前发布版本为 [`1.0.4`](https://www.powershellgallery.com/packages/PSAITerminal/1.0.4)。本仓库源码包含尚未发布的改动，内容见 [更新日志](CHANGELOG.md) 的“未发布”章节。
+当前版本为 [`2.0.0`](https://www.powershellgallery.com/packages/PSAITerminal/2.0.0)，变更见 [更新日志](CHANGELOG.md)。从 1.0.x 升级是不兼容升级：请同时升级 Windows PowerShell 5.1 和 PowerShell 7 中的安装（`-TargetHost Both`），旧模型配置会自动迁移。
 
 > 发布包未做 Authenticode 签名。手动安装时请核对 Release 附带的 `SHA256SUMS-Windows.txt`。
 

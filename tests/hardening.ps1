@@ -3,7 +3,7 @@
 param([string]$ModulePath)
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
-if([string]::IsNullOrWhiteSpace($ModulePath)){$ModulePath=Join-Path $PSScriptRoot '../out/PSAITerminal-1.0.4/PSAITerminal.psd1'}
+if([string]::IsNullOrWhiteSpace($ModulePath)){$ModulePath=Join-Path $PSScriptRoot '../out/PSAITerminal-2.0.0/PSAITerminal.psd1'}
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('PSAI.Hardening.'+[guid]::NewGuid().ToString('N'))
 $previousConfig=$env:PSAI_CONFIG_HOME; $previousData=$env:PSAI_DATA_HOME
 $profileHost=$PROFILE.CurrentUserCurrentHost; $profileAll=$PROFILE.CurrentUserAllHosts
