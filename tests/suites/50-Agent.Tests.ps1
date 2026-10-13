@@ -3,19 +3,17 @@
 [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidGlobalVars', '', Justification = '模块内审批与顶层执行的命令需要共享测试桩状态。')]
 param()
 
-# 上下文达到预算后应自动摘要，并保留最近轮次。
-New-PSAISession -Title '压缩测试' | Out-Null
-& $module { 1..10 | ForEach-Object { Add-AISessionTurn 'user' ("第 $_ 轮 " + ('x' * 900)) 'message' | Out-Null } }
-Set-PSAITerminalOption -ContextBudgetPercent 50 -RecentTurns 2 | Out-Null
-$summaryResponse = ConvertTo-AIMockSse '保留目标与关键结果的压缩摘要。'
-$server = Start-AIMockServer @($summaryResponse)
-try {
-    Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($server.Port)") -ContextWindow 1024 | Out-Null
-    & $module { $model=Get-AIActiveModel; Compress-AISessionIfNeeded $model ([Threading.CancellationToken]::None) }
-    $compression = & $module { [pscustomobject]@{Count=[int]$script:CurrentSession.compactedTurnCount;Summary=[string]$script:CurrentSession.summary} }
-    Assert-Equal 8 $compression.Count '压缩后应保留最近 2 个 Turn。'
-    Assert-Match $compression.Summary '压缩摘要' '压缩摘要必须持久化。'
-} finally { Stop-AIMockServer $server }
+# 上下文超出模型窗口预算时丢弃最早的轮次，保留最近内容；不调用模型做摘要。
+New-PSAISession -Title '上下文测试' | Out-Null
+& $module { 1..40 | ForEach-Object { Add-AISessionTurn 'user' ("第 $_ 轮 " + ('x' * 900)) 'message' | Out-Null } }
+$context = & $module {
+    $messages = @(Get-AISessionMessages @{contextWindow=1024} '最新要求')
+    [pscustomobject]@{Count=$messages.Count;Characters=($messages | ForEach-Object { ([string]$_.content).Length } | Measure-Object -Sum).Sum;Last=[string]$messages[-1].content;First=[string]$messages[0].content}
+}
+Assert-True ($context.Characters -le 16384) '上下文必须限制在窗口预算内。'
+Assert-Equal '最新要求' $context.Last '当前要求必须保留在上下文末尾。'
+Assert-True ($context.First -notmatch '^第 1 轮') '超出预算时必须先丢弃最早的轮次。'
+Assert-True ($context.Count -gt 10) '预算内的最近轮次必须保留。'
 
 # Agent 场景：模拟服务按顺序返回模型响应；Read-Host 按队列回答审批菜单；调度脚本在本测试的顶层作用域执行。
 function Start-AgentScenario([string[]]$Responses, [string[]]$Answers = @()) {

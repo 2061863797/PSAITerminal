@@ -83,8 +83,6 @@ function New-AIDefaultConfig {
         execution = [ordered]@{
             maxAgentSteps = 12
             requestTimeoutSeconds = 120
-            contextBudgetPercent = 75
-            recentTurns = 8
             outputCaptureCharacters = 65536
             autoApprove = @()
         }
@@ -278,8 +276,6 @@ function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
     }
     Assert-AIIntegerValue $Candidate.execution.maxAgentSteps 1 100 'Agent 最大步骤数'
     Assert-AIIntegerValue $Candidate.execution.requestTimeoutSeconds 10 600 '请求超时'
-    Assert-AIIntegerValue $Candidate.execution.contextBudgetPercent 50 90 '上下文压缩阈值'
-    Assert-AIIntegerValue $Candidate.execution.recentTurns 2 32 '压缩后保留轮数'
     Assert-AIIntegerValue $Candidate.execution.outputCaptureCharacters 1024 65536 '步骤输出上限'
     $autoApprove = $Candidate.execution.autoApprove
     if ($autoApprove -isnot [Collections.IList] -or $autoApprove.Count -gt 100 -or

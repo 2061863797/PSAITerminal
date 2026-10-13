@@ -78,7 +78,6 @@ $script:Config = $null
 $script:MaximumConfigBytes = 1MB
 $script:MaximumSessionBytes = 16MB
 $script:FileLockTimeoutMilliseconds = 10000
-$script:LastSessionCompressionFailureUtc = $null
 #endregion
 
 #region 2-13. 功能实现（源码位于 Private/，构建时按文件名顺序内联到发布版 psm1）

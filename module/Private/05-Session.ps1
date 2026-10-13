@@ -1,4 +1,4 @@
-﻿# 会话持久化、上下文组装与压缩。
+﻿# 会话持久化与上下文组装：按模型上下文窗口截取最近的轮次，不调用模型做摘要。
 
 function New-AISessionObject([string]$Title) {
     $now = [DateTime]::UtcNow.ToString('O')
@@ -9,7 +9,6 @@ function New-AISessionObject([string]$Title) {
         title = if ([string]::IsNullOrWhiteSpace($Title)) { '新会话' } else { (Protect-AIText $Title 120) }
         createdUtc = $now
         updatedUtc = $now
-        summary = ''
         turns = @()
         inputTokens = 0L
         outputTokens = 0L
@@ -76,7 +75,7 @@ function Import-AISession([string]$Id) {
             if (-not [datetime]::TryParse([string]$session[$dateName], [ref]$parsedDate)) { throw "会话 $dateName 无效。" }
         }
         if ($session.title -isnot [string] -or $session.title.Length -gt 120) { throw '会话标题无效。' }
-        if ($session.summary -isnot [string] -or $session.summary.Length -gt 65536) { throw '会话摘要无效。' }
+
         foreach ($tokenName in @('inputTokens','outputTokens')) {
             $tokenValue = $session[$tokenName]
             $isInteger = $tokenValue -is [sbyte] -or $tokenValue -is [byte] -or $tokenValue -is [int16] -or
@@ -105,10 +104,8 @@ function Import-AISession([string]$Id) {
             $turn.content = Protect-AIText ([string]$turn.content) 65536
         }
         $session.title = Protect-AIText ([string]$session.title) 120
-        $session.summary = Protect-AIText ([string]$session.summary) 16384
-        if (Test-AIMapContains $session 'compactedTurnCount') {
-            Assert-AIIntegerValue $session.compactedTurnCount 0 $session.turns.Count '会话已压缩 Turn 数'
-        }
+        # 1.0.x 的摘要字段不再使用。
+        foreach ($legacyKey in @('summary','compactedTurnCount')) { if (Test-AIMapContains $session $legacyKey) { [void]$session.Remove($legacyKey) } }
         $session
     } catch {
         Write-Warning "无法读取会话 $Id：$($_.Exception.Message)"
@@ -236,11 +233,9 @@ function Clear-PSAISession {
     Invoke-AIWithFileLock $path {
         $latest = Import-AISession $Id
         if (-not $latest) { throw "会话不存在或无法读取：$Id" }
-        $latest.summary = ''
         $latest.turns = @()
         $latest.inputTokens = 0L
         $latest.outputTokens = 0L
-        [void]$latest.Remove('compactedTurnCount')
         Save-AISession $latest -LockHeld
         if ($Id -eq $script:CurrentSession.id) { $script:CurrentSession = $latest }
         $msg = if ((Get-AILanguage) -eq 'en-US') { "PSAITerminal session context cleared." } else { "PSAITerminal 会话上下文已清空。" }
@@ -269,135 +264,33 @@ function Test-AITurnMeaningfulForContext($Turn) {
     $Turn -and [string]$Turn.kind -ne 'tool_proposal'
 }
 
-function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
-    if (-not $script:CurrentSession) { return '' }
-    $parts = [Collections.Generic.List[string]]::new()
-    if ($script:CurrentSession.summary) { $parts.Add("较早对话摘要：`n$($script:CurrentSession.summary)") }
-    $start = if (Test-AIMapContains $script:CurrentSession 'compactedTurnCount') { [int]$script:CurrentSession.compactedTurnCount } else { 0 }
-    $turns = @($script:CurrentSession.turns)
-    for ($index=$start; $index -lt $turns.Count; $index++) {
-        $turn = $turns[$index]
-        if (-not (Test-AITurnMeaningfulForContext $turn)) { continue }
-        $label = switch ([string]$turn.role) { 'user' {'用户'} 'assistant' {'AI'} 'tool' {'工具结果'} default {[string]$turn.role} }
-        $content = Format-AICompactTurnContent ([string]$turn.content)
-        $content = [regex]::Replace($content, '(?i)\b[a-f0-9]{32}\b', '[ID]')
-        $parts.Add("[$label/$($turn.kind)] $content")
-    }
-    $value = Protect-AIText ($parts -join "`n`n") -1
-    if ($value.Length -le $MaximumCharacters) { return $value }
-    $marker = "[较早上下文已省略，完整内容仍保存在会话文件中]`n"
-    $keep = [Math]::Max(0, $MaximumCharacters - $marker.Length)
-    $startIndex = $value.Length - $keep
-    if ($startIndex -gt 0 -and [char]::IsLowSurrogate($value[$startIndex])) { $startIndex++ }
-    $marker + $value.Substring($startIndex)
-}
-
-function Compress-AISessionIfNeeded([Collections.IDictionary]$Model, [Threading.CancellationToken]$CancellationToken) {
-    if (-not $script:CurrentSession) { return }
-    if ($script:LastSessionCompressionFailureUtc) {
-        $elapsedSeconds = ([DateTime]::UtcNow - $script:LastSessionCompressionFailureUtc).TotalSeconds
-        if ($elapsedSeconds -ge 0 -and $elapsedSeconds -lt 300) { return }
-    }
-    $turns = @($script:CurrentSession.turns)
-    $recentCount = [int]$script:Config.execution.recentTurns
-    if ($turns.Count -le $recentCount) { return }
-    $window = [int]$Model.contextWindow
-    $thresholdCharacters = [int]([Math]::Max(4096, $window * 4 * ([int]$script:Config.execution.contextBudgetPercent / 100.0)))
-    $context = Get-AISessionContextText ([Math]::Min(1048576, $thresholdCharacters + 1))
-    if ($context.Length -le $thresholdCharacters) { return }
-
-    $targetCount = $turns.Count - $recentCount
-    $alreadyCompacted = if (Test-AIMapContains $script:CurrentSession 'compactedTurnCount') { [int]$script:CurrentSession.compactedTurnCount } else { 0 }
-    if ($targetCount -le $alreadyCompacted) { return }
-    $source = [Collections.Generic.List[string]]::new()
-    if ($script:CurrentSession.summary) { $source.Add("已有摘要：$($script:CurrentSession.summary)") }
-    for ($index=$alreadyCompacted; $index -lt $targetCount; $index++) {
-        $t = $turns[$index]
-        if (Test-AITurnMeaningfulForContext $t) {
-            $source.Add("$($t.role)：$($t.content)")
-        }
-    }
-    $summaryPrompt = "把下面本地终端会话压缩为简洁事实摘要。保留用户目标、关键路径、已执行命令、结果、错误、未完成事项和明确偏好；不要补充不存在的信息；不要调用工具。`n`n$(Protect-AIText ($source -join "`n") 60000)"
-    $previousSummary = [string]$script:CurrentSession.summary
-    $hadCompactedTurnCount = Test-AIMapContains $script:CurrentSession 'compactedTurnCount'
-    $previousCompactedTurnCount = if ($hadCompactedTurnCount) { [int]$script:CurrentSession.compactedTurnCount } else { 0 }
-    $previousInputTokens = [long]$script:CurrentSession.inputTokens
-    $previousOutputTokens = [long]$script:CurrentSession.outputTokens
-    try {
-        $summaryResult = Invoke-AIModelText -Model $Model -Prompt $summaryPrompt -NoRender -CancellationToken $CancellationToken
-        $script:CurrentSession.summary = Protect-AIText $summaryResult.Text 16384
-        $script:CurrentSession.compactedTurnCount = $targetCount
-        Add-AISessionUsageValues $script:CurrentSession ([long]$summaryResult.InputTokens) ([long]$summaryResult.OutputTokens)
-        Save-AISession
-        $script:LastSessionCompressionFailureUtc = $null
-    } catch {
-        $script:LastSessionCompressionFailureUtc = [DateTime]::UtcNow
-        $script:CurrentSession.summary = $previousSummary
-        if ($hadCompactedTurnCount) { $script:CurrentSession.compactedTurnCount = $previousCompactedTurnCount }
-        else { [void]$script:CurrentSession.Remove('compactedTurnCount') }
-        $script:CurrentSession.inputTokens = $previousInputTokens
-        $script:CurrentSession.outputTokens = $previousOutputTokens
-        Write-Warning "会话自动压缩失败，本次继续使用最近上下文：$($_.Exception.Message)"
-    }
-}
-
-function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 131072) {
+# 上下文预算按模型窗口估算（每 Token 约 2 个字符，中英文混合时偏保守），超出时丢弃最早的轮次。
+function Get-AISessionMessages([Collections.IDictionary]$Model, [string]$Instruction) {
+    $window = if ($Model -and $Model.contextWindow) { [int]$Model.contextWindow } else { 32768 }
+    $maximumCharacters = [Math]::Min(262144, [Math]::Max(16384, $window * 2))
     $messages = [Collections.Generic.List[object]]::new()
-    if (-not $script:CurrentSession) {
-        if ($Instruction) {
-            $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $Instruction 65536) })
-        }
-        return $messages
-    }
-
-    $hasSummary = (Test-AIMapContains $script:CurrentSession 'summary') -and (-not [string]::IsNullOrWhiteSpace([string]$script:CurrentSession['summary']))
-    if ($hasSummary) {
-        $summaryText = [string]$script:CurrentSession['summary']
-        $summaryLabel = if ((Get-AILanguage) -eq 'en-US') {
-            "Previous session facts summary:`n$summaryText"
-        } else {
-            "较早对话摘要：`n$summaryText"
-        }
-        $ackText = if ((Get-AILanguage) -eq 'en-US') { "Understood. I will follow the earlier context." } else { "已了解上述历史会话事实。" }
-        $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $summaryLabel 16384) })
-        $messages.Add([ordered]@{ role = 'assistant'; content = $ackText })
-    }
-
-    $start = if (Test-AIMapContains $script:CurrentSession 'compactedTurnCount') { [int]$script:CurrentSession['compactedTurnCount'] } else { 0 }
-    $turns = if (Test-AIMapContains $script:CurrentSession 'turns') { @($script:CurrentSession['turns']) } else { @() }
-    for ($index = $start; $index -lt $turns.Count; $index++) {
-        $turn = $turns[$index]
+    $turns = if ($script:CurrentSession) { @($script:CurrentSession.turns) } else { @() }
+    $toolPrefix = if ((Get-AILanguage) -eq 'en-US') { '[Tool Result] ' } else { '[工具结果] ' }
+    foreach ($turn in $turns) {
         if (-not (Test-AITurnMeaningfulForContext $turn)) { continue }
-        $rawRole = [string]$turn.role
-        $role = if ($rawRole -eq 'assistant') { 'assistant' } else { 'user' }
+        $role = if ([string]$turn.role -eq 'assistant') { 'assistant' } else { 'user' }
         $content = Format-AICompactTurnContent ([string]$turn.content)
-        $content = [regex]::Replace($content, '(?i)\b[a-f0-9]{32}\b', '[ID]')
-
-        $prefix = if ($rawRole -eq 'tool') {
-            if ((Get-AILanguage) -eq 'en-US') { "[Tool Result] " } else { "[工具结果] " }
-        } else { '' }
-        $safeContent = Protect-AIText "$prefix$content" -1
-        $messages.Add([ordered]@{ role = $role; content = $safeContent })
+        if ([string]$turn.role -eq 'tool') { $content = $toolPrefix + $content }
+        $messages.Add([ordered]@{ role = $role; content = (Protect-AIText $content -1) })
     }
+    if ($Instruction) { $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $Instruction 65536) }) }
 
-    if ($Instruction) {
-        $messages.Add([ordered]@{ role = 'user'; content = (Protect-AIText $Instruction 65536) })
-    }
-
-    $totalChars = 0
-    foreach ($m in $messages) { $totalChars += [string]$m.content.Length }
-    while ($totalChars -gt $MaximumCharacters -and $messages.Count -gt 2) {
-        $removed = $messages[0]
+    $totalCharacters = 0
+    foreach ($message in $messages) { $totalCharacters += ([string]$message.content).Length }
+    while ($totalCharacters -gt $maximumCharacters -and $messages.Count -gt 1) {
+        $totalCharacters -= ([string]$messages[0].content).Length
         $messages.RemoveAt(0)
-        $totalChars -= [string]$removed.content.Length
     }
-
     $messages
 }
 
 function Invoke-AISessionModel([Collections.IDictionary]$Model, [string]$Instruction, [switch]$EnableTools,
     [switch]$NoRender, [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None) {
-    Compress-AISessionIfNeeded $Model $CancellationToken
-    $messages = Get-AISessionMessages -Instruction $Instruction
+    $messages = Get-AISessionMessages $Model $Instruction
     Invoke-AIModelText -Model $Model -Messages $messages -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
 }

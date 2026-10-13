@@ -473,8 +473,6 @@ function Set-PSAITerminalOption {
     [CmdletBinding()] param(
         [ValidateRange(1,100)][int]$MaxAgentSteps,
         [ValidateRange(10,600)][int]$RequestTimeoutSeconds,
-        [ValidateRange(50,90)][int]$ContextBudgetPercent,
-        [ValidateRange(2,32)][int]$RecentTurns,
         [ValidateRange(1024,65536)][int]$OutputCaptureCharacters,
         [Nullable[bool]]$ColorEnabled,
         [Nullable[bool]]$EnterRouting,
@@ -484,8 +482,6 @@ function Set-PSAITerminalOption {
     )
     $hasMaxAgentSteps = $PSBoundParameters.ContainsKey('MaxAgentSteps')
     $hasRequestTimeout = $PSBoundParameters.ContainsKey('RequestTimeoutSeconds')
-    $hasContextBudget = $PSBoundParameters.ContainsKey('ContextBudgetPercent')
-    $hasRecentTurns = $PSBoundParameters.ContainsKey('RecentTurns')
     $hasOutputCapture = $PSBoundParameters.ContainsKey('OutputCaptureCharacters')
     $hasColor = $PSBoundParameters.ContainsKey('ColorEnabled')
     $hasEnterRouting = $PSBoundParameters.ContainsKey('EnterRouting')
@@ -494,8 +490,6 @@ function Set-PSAITerminalOption {
     Invoke-AIConfigMutation {
         if ($hasMaxAgentSteps) { $script:Config.execution.maxAgentSteps = $MaxAgentSteps }
         if ($hasRequestTimeout) { $script:Config.execution.requestTimeoutSeconds = $RequestTimeoutSeconds }
-        if ($hasContextBudget) { $script:Config.execution.contextBudgetPercent = $ContextBudgetPercent }
-        if ($hasRecentTurns) { $script:Config.execution.recentTurns = $RecentTurns }
         if ($hasOutputCapture) { $script:Config.execution.outputCaptureCharacters = $OutputCaptureCharacters }
         if ($hasColor) { $script:Config.appearance.colorEnabled = [bool]$ColorEnabled }
         if ($hasEnterRouting) { $script:Config.integrations.enterRouting = [bool]$EnterRouting }
