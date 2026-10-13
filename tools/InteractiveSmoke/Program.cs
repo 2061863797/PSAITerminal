@@ -120,7 +120,7 @@ try
     {
         // 合成模型只返回内存响应，用真实按键验证路由，不连接在线服务。
         string modelName = "conpty-" + Guid.NewGuid().ToString("N");
-        terminal.Send($"New-PSAIModel -Name '{modelName}' -Protocol OpenAIChat -Endpoint http://127.0.0.1:1 -ModelId fixture|Out-Null;Select-PSAIModel '{modelName}'|Out-Null;& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {{$script:ConptyOriginal=(Get-Command Invoke-AISessionModel).ScriptBlock;$script:ConptyCount=0;$script:ConptyChoices=$true;function script:Read-Host {{param($Prompt) if($script:ConptyChoices){{''}}else{{Microsoft.PowerShell.Utility\\Read-Host $Prompt}}}};function script:Invoke-AISessionModel {{param($Model,$Instruction,[switch]$EnableTools,[switch]$NoRender,$CancellationToken) [void]$Model;[void]$NoRender;[void]$CancellationToken;$script:ConptyCount++;$script:ConptyInstruction=$Instruction;$calls=@();if($EnableTools){{$cmd=\"Write-Output '__PSAI_FIXTURE_RESULT_$($script:ConptyCount)__'\";$calls=@(@{{name='powershell';arguments=@{{purpose='fixture';command=$cmd;expectedOutcome='fixture';sideEffects='fixture';rollbackHint='fixture';plan=@{{mode='Single';steps=@('fixture');completionCondition='fixture'}};stepIndex=1;stepRole='Operation';afterSuccess='Complete'}}}})}};[pscustomobject]@{{Text='fixture-consultation';ToolCalls=$calls;InputTokens=0L;OutputTokens=0L}}}}}};Write-Output ('__PSAI_FIXTURE_'+'READY__')\r");
+        terminal.Send($"New-PSAIModel -Name '{modelName}' -Protocol OpenAIChat -Endpoint http://127.0.0.1:1 -ModelId fixture|Out-Null;Select-PSAIModel '{modelName}'|Out-Null;& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {{$script:ConptyOriginal=(Get-Command Invoke-AISessionModel).ScriptBlock;$script:ConptyCount=0;$script:ConptyTools=0;$script:ConptyNext='';$script:ConptyChoices=$true;function script:Read-Host {{param($Prompt) if($script:ConptyChoices){{$c=$script:ConptyNext;$script:ConptyNext='';$c}}else{{Microsoft.PowerShell.Utility\\Read-Host $Prompt}}}};function script:Invoke-AISessionModel {{param($Model,$Instruction,[switch]$EnableTools,[switch]$NoRender,$CancellationToken) [void]$Model;[void]$NoRender;[void]$CancellationToken;[void]$Instruction;$script:ConptyCount++;$calls=@();$last=@($script:CurrentSession.turns)[-1];if($EnableTools -and $last.kind -ne 'tool_result'){{$script:ConptyTools++;$cmd=if($script:ConptyNext -eq 'e'){{\"Write-Output ('__PSAI_EDIT_'+'RAN__')\"}}else{{\"Write-Output '__PSAI_FIXTURE_RESULT_$($script:ConptyTools)__'\"}};$calls=@(@{{name='powershell';arguments=@{{purpose='fixture';command=$cmd}}}})}};[pscustomobject]@{{Text='fixture-text';ToolCalls=$calls;InputTokens=0L;OutputTokens=0L}}}}}};Write-Output ('__PSAI_FIXTURE_'+'READY__')\r");
         terminal.WaitFor("__PSAI_FIXTURE_READY__", TimeSpan.FromSeconds(10));
         terminal.WaitForAfter("PS ", "__PSAI_FIXTURE_READY__", TimeSpan.FromSeconds(10));
         // 模式标记必须由真实 prompt 动态显示，且不能依赖预先配置模型。
@@ -145,7 +145,20 @@ try
         terminal.WaitFor("__PSAI_FIXTURE_RESULT_3__", TimeSpan.FromSeconds(10));
         terminal.WaitForAfter("[AI] PS ", "__PSAI_FIXTURE_RESULT_3__", TimeSpan.FromSeconds(10));
         terminal.Send("请问什么是进程\r");
-        terminal.WaitForAfter("[AI] PS ", "请问什么是进程", TimeSpan.FromSeconds(10));
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_4__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_FIXTURE_RESULT_4__", TimeSpan.FromSeconds(10));
+
+        // 审批选择 E：命令预填到下一次输入行，由用户修改后自行提交（这里用 F3 原样执行）。
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:ConptyNext='e' };Write-Output ('__PSAI_EDIT_'+'ARMED__')");
+        terminal.Send("\u001bOR");
+        terminal.WaitFor("__PSAI_EDIT_ARMED__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_EDIT_ARMED__", TimeSpan.FromSeconds(10));
+        terminal.Send("PSAI_EDIT_PROBE\r");
+        terminal.WaitFor("Command placed in the input line", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("Write-Output ('__PSAI_EDIT_'+'RAN__')", "Command placed in the input line", TimeSpan.FromSeconds(10));
+        terminal.Send("\u001bOR");
+        terminal.WaitFor("__PSAI_EDIT_RAN__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AI] PS ", "__PSAI_EDIT_RAN__", TimeSpan.FromSeconds(10));
 
         // F3 不触发模型，未闭合代码由原生 AcceptLine 继续多行编辑。
         terminal.Send("if ($true) {");
@@ -158,7 +171,7 @@ try
         terminal.Send("if ($true) {");
         terminal.Send("\u0003");
         Thread.Sleep(200);
-        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {if($script:ConptyCount -ne 4 -or @(Get-PSAIRun).Count -ne 3 -or $script:PendingAIInputBridge){throw 'route-count'};$h=[Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems().CommandLine;if($h -notcontains 'if ($true) {' -or $h -notcontains 'foreach ($entry in' -or $h -contains '# if ($true) {'){throw 'history-bridge'};Write-Output ('__PSAI_ROUTE_'+'ONCE__')}");
+        terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner {if($script:ConptyTools -ne 5 -or $script:ConptyCount -ne 9 -or $script:PendingAIInputBridge){throw \"route-count $($script:ConptyTools)/$($script:ConptyCount)\"};$h=[Microsoft.PowerShell.PSConsoleReadLine]::GetHistoryItems().CommandLine;if($h -notcontains 'if ($true) {' -or $h -notcontains 'foreach ($entry in' -or $h -contains '# if ($true) {'){throw 'history-bridge'};Write-Output ('__PSAI_ROUTE_'+'ONCE__')}");
         terminal.Send("\u001bOR");
         terminal.WaitFor("__PSAI_ROUTE_ONCE__", TimeSpan.FromSeconds(10));
         terminal.WaitForAfter("[AI] PS ", "__PSAI_ROUTE_ONCE__", TimeSpan.FromSeconds(10));
@@ -169,6 +182,17 @@ try
         terminal.Send("Write-Output ('__PSAI_AUTO_'+'CONTINUED__') }\r");
         terminal.WaitFor("__PSAI_AUTO_CONTINUED__", TimeSpan.FromSeconds(10));
         terminal.WaitForAfter("[AUTO] PS ", "__PSAI_AUTO_CONTINUED__", TimeSpan.FromSeconds(10));
+        // Auto：命令原样执行；失败后提示 F7，F7 进入诊断修复。提示依赖 prompt 包装首句捕获的真实 $?。
+        terminal.Send("Get-Item __psai_missing_item__\r");
+        terminal.WaitFor("Command failed", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AUTO] PS ", "Command failed", TimeSpan.FromSeconds(10));
+        terminal.Send("\u001b[18~");
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_6__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AUTO] PS ", "__PSAI_FIXTURE_RESULT_6__", TimeSpan.FromSeconds(10));
+        // Auto：自然语言交给 Agent。
+        terminal.Send("how much disk space is left\r");
+        terminal.WaitFor("__PSAI_FIXTURE_RESULT_7__", TimeSpan.FromSeconds(10));
+        terminal.WaitForAfter("[AUTO] PS ", "__PSAI_FIXTURE_RESULT_7__", TimeSpan.FromSeconds(10));
         terminal.Send("& ([AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')).Owner { $script:Config.mode='Off' };Write-Output ('__PSAI_MODE_'+'OFF__')");
         terminal.Send("\u001bOR");
         terminal.WaitFor("__PSAI_MODE_OFF__", TimeSpan.FromSeconds(10));
@@ -219,8 +243,9 @@ try
     if ((!useProfile && !clean.Contains("PSAI_F2_PROBE", StringComparison.Ordinal)) ||
         clean.Contains(". (Invoke-PSAI)", StringComparison.Ordinal) ||
         clean.Contains("Invoke-PSAI -PendingInvocation", StringComparison.Ordinal) ||
-        clean.Contains("New-AITopLevelHarnessScript", StringComparison.Ordinal) ||
-        clean.Contains("Start-PSAIToolExecution", StringComparison.Ordinal) ||
+        clean.Contains("New-AIAgentHarnessScript", StringComparison.Ordinal) ||
+        clean.Contains("Submit-AIAgentResult", StringComparison.Ordinal) ||
+        clean.Contains("$__psai_", StringComparison.Ordinal) ||
         clean.Contains("The term 'if' is not recognized", StringComparison.Ordinal) ||
         clean.Contains("while ($null -ne", StringComparison.Ordinal))
     {
@@ -229,7 +254,7 @@ try
 
     Console.WriteLine(useProfile
         ? "ConPTY Profile 冒烟测试通过：模块已自动加载，F2/F3 已注册，F3 已真实触发。"
-        : "ConPTY 交互冒烟测试通过：AI 合法/不完整输入只提交一次，Enter/F2/F3、取消、原生续行、历史、咨询和设置菜单已验证，内部调度命令未显示。");
+        : "ConPTY 交互冒烟测试通过：AI 输入只提交一次，Enter/F2/F3/F7、放入命令行、失败提示、Auto 自然语言、取消、原生续行、历史和设置菜单已验证，内部调度命令未显示。");
     return 0;
 }
 catch (Exception exception)

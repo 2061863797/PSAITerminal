@@ -1,4 +1,4 @@
-﻿# 命令 AST 安全分析、风险分级与审批摘要。
+﻿# 命令 AST 安全分析与风险分级。
 
 # 命令名的静态规则在 C# 中；这里按当前会话解析别名和函数，防止重绑定绕过分级。
 function Get-AICommandRisk([string]$Command) {
@@ -57,21 +57,4 @@ function Test-AISystemModule([AllowNull()][Management.Automation.PSModuleInfo]$M
         if ($root -and $base.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     $false
-}
-
-function Get-AIApprovalDigest([string]$RunId, [string]$StepId, [string]$Command,
-    [Collections.IDictionary]$Proposal, [Collections.IDictionary]$Run) {
-    $payload = "$($RunId.Length):$RunId$($StepId.Length):$StepId$($Command.Length):$Command"
-    foreach ($field in @('purpose','expectedOutcome','sideEffects','rollbackHint','explanationReady')) {
-        $value = if ($Proposal -and (Test-AIMapContains $Proposal $field)) { [string]$Proposal[$field] } else { '' }
-        $payload += "$($value.Length):$value"
-    }
-    if ($Run -and $Run.schemaVersion -eq 2) {
-        $payload += ([ordered]@{plan=$Run.plan;nextStep=$Run.nextStep;phase=$Run.phase;
-            stepIndex=$Proposal.stepIndex;stepRole=$Proposal.stepRole;afterSuccess=$Proposal.afterSuccess} | ConvertTo-Json -Depth 10 -Compress)
-    }
-    $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
-    $hasher = [Security.Cryptography.SHA256]::Create()
-    try { $hash = $hasher.ComputeHash($bytes) } finally { $hasher.Dispose() }
-    ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }

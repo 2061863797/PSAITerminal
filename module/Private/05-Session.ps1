@@ -118,7 +118,6 @@ function Import-AISession([string]$Id) {
 
 function Initialize-AISessionState {
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:SessionDirectory)
-    [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:RunDirectory)
 
     $envVarName = "__PSAI_SESSION_PID_$PID"
     $procSessionId = [Environment]::GetEnvironmentVariable($envVarName, 'Process')
@@ -138,17 +137,6 @@ function Initialize-AISessionState {
 
     [Environment]::SetEnvironmentVariable($envVarName, [string]$session.id, 'Process')
     $script:CurrentSession = $session
-    $lastTool = @($session.turns | Where-Object kind -eq 'tool_result' | Select-Object -Last 1)
-    if ($lastTool.Count -and $lastTool[0].metadata -is [Collections.IDictionary]) {
-        $metadata = $lastTool[0].metadata
-        $script:LastCommandResult = [pscustomobject]@{
-            Command=[string]$metadata.command;Succeeded=[bool]$metadata.succeeded;Output=[string]$metadata.output
-            Error=if([bool]$metadata.succeeded){$null}else{[string]$metadata.output};Source='AI'
-            CompletedUtc=[datetime]$lastTool[0].createdUtc;RunId=[string]$metadata.runId;StepId=[string]$metadata.stepId
-        }
-    } else {
-        $script:LastCommandResult = $null
-    }
 }
 
 function Add-AISessionUsageValues([Collections.IDictionary]$Session, [long]$InputTokens, [long]$OutputTokens) {
@@ -276,17 +264,9 @@ function Format-AICompactTurnContent([string]$Content, [int]$MaxLines = 50, [int
     "$head`n`n$note`n`n$tail"
 }
 
+# 1.0.x 会话中的 tool_proposal 轮次只是审批记录，不进入上下文。
 function Test-AITurnMeaningfulForContext($Turn) {
-    if (-not $Turn) { return $false }
-    $kind = [string]$Turn.kind
-    if ($kind -eq 'tool_proposal') { return $false }
-    $content = [string]$Turn.content
-    if ($content -match '^(?i:继续完成 Run [a-f0-9]{32} 的本地任务)') { return $false }
-    if ($content -match '^(?i:Complete the user''s (task|request))') { return $false }
-    if ($content -match '^(?i:完成用户的(本地)?(任务|请求))') { return $false }
-    if ($content -match '(?i:Get-ChildItem\s+.*Run[a-f0-9]*)') { return $false }
-    if ($content -match '(?i:搜索.*Run|查找.*Run)') { return $false }
-    return $true
+    $Turn -and [string]$Turn.kind -ne 'tool_proposal'
 }
 
 function Get-AISessionContextText([int]$MaximumCharacters = 131072) {
@@ -392,23 +372,7 @@ function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 1
         $role = if ($rawRole -eq 'assistant') { 'assistant' } else { 'user' }
         $content = Format-AICompactTurnContent ([string]$turn.content)
         $content = [regex]::Replace($content, '(?i)\b[a-f0-9]{32}\b', '[ID]')
-        if ($role -eq 'assistant' -and $content -match '(?si)```(?:json|powershell|ps1|pwsh)?\s*\{[\s\S]*?"command"[\s\S]*?```|\{[\s\S]*?"purpose"[\s\S]*?"command"[\s\S]*?\}') {
-            $extractedTurn = Find-AITextToolCall $content
-            if ($extractedTurn) {
-                $purp = [string]$extractedTurn.ToolCall.arguments.purpose
-                $cmd = [string]$extractedTurn.ToolCall.arguments.command
-                $desc = if ((Get-AILanguage) -eq 'en-US') {
-                    "[Proposed Command: $cmd] (Purpose: $purp)"
-                } else {
-                    "[提议执行命令: $cmd] (目的: $purp)"
-                }
-                $content = if ([string]::IsNullOrWhiteSpace($extractedTurn.CleanedText)) {
-                    $desc
-                } else {
-                    "$($extractedTurn.CleanedText)`n$desc"
-                }
-            }
-        }
+
         $prefix = if ($rawRole -eq 'tool') {
             if ((Get-AILanguage) -eq 'en-US') { "[Tool Result] " } else { "[工具结果] " }
         } else { '' }
@@ -434,14 +398,6 @@ function Get-AISessionMessages([string]$Instruction, [int]$MaximumCharacters = 1
 function Invoke-AISessionModel([Collections.IDictionary]$Model, [string]$Instruction, [switch]$EnableTools,
     [switch]$NoRender, [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None) {
     Compress-AISessionIfNeeded $Model $CancellationToken
-    try {
-        $messages = Get-AISessionMessages -Instruction $Instruction
-        $result = Invoke-AIModelText -Model $Model -Messages $messages -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
-        return $result
-    } catch {
-        $context = Get-AISessionContextText
-        $prompt = if ($context) { "以下是持久会话上下文：`n$context`n`n当前要求：$Instruction" } else { $Instruction }
-        $result = Invoke-AIModelText -Model $Model -Prompt $prompt -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
-        return $result
-    }
+    $messages = Get-AISessionMessages -Instruction $Instruction
+    Invoke-AIModelText -Model $Model -Messages $messages -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
 }

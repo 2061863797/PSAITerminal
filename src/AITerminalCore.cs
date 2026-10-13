@@ -224,62 +224,6 @@ public static class AITerminalInputRouter
 
         return false;
     }
-
-    public static bool IsConversationalInput(string? line) => ClassifyIntent(line) == "Consultation";
-
-    public static string ClassifyIntent(string? line)
-    {
-        if (string.IsNullOrWhiteSpace(line))
-        {
-            return "Clarify";
-        }
-
-        string trimmed = line!.Trim();
-        // 礼貌前缀只参与分类，提交给模型的原文由调用方保留。
-        trimmed = Regex.Replace(trimmed, @"^(?:请问(?:一下)?|请教(?:一下)?|麻烦问(?:一下|下)?)\s*", string.Empty);
-
-        // 1. 常见问候语（你好、hi、hello、早上好、在吗等）
-        if (Regex.IsMatch(trimmed, @"^(?i:你好|您好|hello|hi|hey|good\s*(morning|afternoon|evening)|早上好|下午好|晚上好|在吗|在不在|哈喽)[\s!！?？~～]*$"))
-        {
-            return "Consultation";
-        }
-
-        // 2. 能力咨询、自省与帮助（你还能做什么、怎么用、你是谁、你能帮我什么等）
-        if (Regex.IsMatch(trimmed, @"^(?i:你(?:还)?(?:能|可以|会)做什么|你(?:有|具备)什么(?:功能|能力)|怎么用|如何使用|使用帮助|你是谁|自我介绍|介绍下自己|介绍一下你自己|你能帮我什么|help|who\s+are\s+you|what\s+can\s+you\s+do|how\s+to\s+use)(?:\s*(?:了解原理|咨询|解释))?[\s!！?？~～]*$"))
-        {
-            return "Consultation";
-        }
-
-        // 3. 针对澄清提示（“你希望了解原理还是执行操作？”）的直接回答
-        if (Regex.IsMatch(trimmed, @"^(?i:了解原理|想了解原理|看原理|看下原理|讲讲原理|原理|explanation|explain)[\s!！?？~～]*$"))
-        {
-            return "Consultation";
-        }
-        if (Regex.IsMatch(trimmed, @"^(?i:执行操作|想执行操作|直接操作|操作|帮我执行|执行|action|execute|do\s+it)[\s!！?？~～]*$"))
-        {
-            return "Operation";
-        }
-
-        // 4. 概念性问句与解释性咨询（什么是、为什么、怎么理解、区别是什么、有何区别等）
-        if (Regex.IsMatch(trimmed, @"^(?:什么是|为何|为什么|怎么理解|如何理解|解释一下|解释下|介绍一下|介绍下|帮我解释|有何区别|区别是什么)|^(?i:what\s+is|what\s+are|why|how\s+to\s+understand|explain|tell\s+me\s+about)\b"))
-        {
-            return "Consultation";
-        }
-
-        if (Regex.IsMatch(trimmed, @"(?:是什么|是什么意思|有何区别|有什么区别|区别是什么|怎么回事)[\s!！?？~～]*$"))
-        {
-            return "Consultation";
-        }
-
-        // 5. 如果包含明确的操作型动词或具体终端目标指令词，直接判定为指令任务（非自由闲聊）
-        if (Regex.IsMatch(trimmed, @"^(?:请问|请|帮我|替我|给我|麻烦|能否|能不能|可以|我想|我要|需要)?\s*(?:帮我|替我|给我)?\s*(?:查|查看|查询|查找|找|找到|找寻|搜|搜索|搜寻|检|检查|检测|检验|看|看看|看一下|看下|扫|扫描|测|测试|列出|显示|杀死|杀掉|结束|重启|启动|停止|开启|打开|关闭|运行|执行|安装|卸载|配置|设置|创建|新建|建立|生成|删除|删掉|清理|清除|清空|打包|编译|构建|发布|备份|还原|恢复|压缩|解压|修复|解决|诊断|定位|复制|拷贝|移动|剪切|重命名|替换|修改|下载|上传|读取|写入|统计|分析|优化)|^(?i:(?:please\s+)?(?:find|search|lookup|inspect|check|scan|get|show|list|view|kill|terminate|stop|start|restart|open|close|run|exec|execute|install|uninstall|setup|configure|create|make|build|compile|publish|package|clean|clear|remove|delete|test|ping|curl|download|upload|backup|restore|compress|unzip|tar|git|docker|npm|yarn|pnpm|cargo|kubectl|ipconfig|netstat))\b"))
-        {
-            return "Operation";
-        }
-
-        // 标点和语气词不能证明用户只想咨询；未知输入需要澄清。
-        return "Clarify";
-    }
 }
 
 public static class AITerminalEndpointResolver
@@ -1081,6 +1025,64 @@ public static class AITerminalAtomicFile
             LocalFree(pSecurityDescriptor);
         }
     }
+}
+
+/// <summary>
+/// 把文本作为按键写入控制台输入缓冲区，使下一次 PSReadLine 读取时显示为已输入、可编辑的内容。
+/// </summary>
+public static class AITerminalConsoleInput
+{
+    private const int StandardInputHandle = -10;
+    private const ushort KeyEventType = 0x0001;
+    private const ushort VirtualKeyReturn = 0x0D;
+    private const uint ShiftPressed = 0x0010;
+
+    public static bool TryWrite(string? text)
+    {
+        if (!AITerminalPlatform.IsWindows || string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        IntPtr handle = GetStdHandle(StandardInputHandle);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+        {
+            return false;
+        }
+
+        List<InputRecord> records = new();
+        foreach (char raw in text!.Replace("\r\n", "\n"))
+        {
+            // 换行用 Shift+Enter 续行而不是提交；制表符换成空格，避免触发补全。
+            bool newline = raw is '\n' or '\r';
+            char character = newline ? '\r' : raw == '\t' ? ' ' : raw;
+            ushort virtualKey = newline ? VirtualKeyReturn : (ushort)0;
+            uint controlState = newline ? ShiftPressed : 0;
+            records.Add(new InputRecord { EventType = KeyEventType, KeyDown = 1, RepeatCount = 1, VirtualKeyCode = virtualKey, UnicodeChar = character, ControlKeyState = controlState });
+            records.Add(new InputRecord { EventType = KeyEventType, KeyDown = 0, RepeatCount = 1, VirtualKeyCode = virtualKey, UnicodeChar = character, ControlKeyState = controlState });
+        }
+
+        InputRecord[] buffer = records.ToArray();
+        return WriteConsoleInput(handle, buffer, (uint)buffer.Length, out uint written) && written == buffer.Length;
+    }
+
+    [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+    private struct InputRecord
+    {
+        [FieldOffset(0)] public ushort EventType;
+        [FieldOffset(4)] public int KeyDown;
+        [FieldOffset(8)] public ushort RepeatCount;
+        [FieldOffset(10)] public ushort VirtualKeyCode;
+        [FieldOffset(12)] public ushort VirtualScanCode;
+        [FieldOffset(14)] public char UnicodeChar;
+        [FieldOffset(16)] public uint ControlKeyState;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int standardHandle);
+
+    [DllImport("kernel32.dll", EntryPoint = "WriteConsoleInputW", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool WriteConsoleInput(IntPtr consoleInput, InputRecord[] buffer, uint length, out uint written);
 }
 
 public static class PlatformCredentialStore

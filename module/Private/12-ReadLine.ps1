@@ -25,37 +25,10 @@ function Test-AIAutoRoute([string]$Line) {
     [PSAITerminal.AITerminalInputRouter]::NeedsAgent($Line, $commandExists, $pathExists)
 }
 
-function ConvertTo-AIIntentInvocationLine([string]$Line, [switch]$ExplicitAI) {
-    $tokens=$null; $parseErrors=$null
-    [void][Management.Automation.Language.Parser]::ParseInput($Line, [ref]$tokens, [ref]$parseErrors)
-    $intent = [PSAITerminal.AITerminalInputRouter]::ClassifyIntent($Line)
-    if ($intent -ne 'Consultation' -and @($parseErrors).Count -gt 0 -and $Line -match '[-$|{}\\/]|^\s*(?:Get|Set|New|Remove|Start|Stop|git|docker|npm|kubectl)\b') {
-        $task = "诊断以下代码的语法错误：`n$Line`n解析错误：$(@($parseErrors | ForEach-Object Message) -join '; ')`n先解释根因，再按结构化计划提出修复命令。"
-        return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $task -Agent)
-    }
-    switch ($intent) {
-        'Consultation' { return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line) }
-        'Operation' { return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent) }
-        default {
-            # 澄清不创建 Run，也不请求模型或保存待执行命令。
-            if ($ExplicitAI) {
-                return New-AIPendingInvocationLine (ConvertTo-AIInvocationLine $Line -Agent)
-            }
-            if ($script:NextPendingInvocationId) {
-                [void]$script:PendingInvocationScripts.Remove([string]$script:NextPendingInvocationId)
-                $script:NextPendingInvocationId=$null
-            }
-            if ((Get-AILanguage) -eq 'en-US') {
-                return "Write-Host 'Do you want an explanation or an action? Please enter your complete request again.'"
-            }
-            return "Write-Host '你希望了解原理还是执行操作？请重新输入完整需求。'"
-        }
-    }
-}
-
 function ConvertTo-AISubmittedLine([string]$Line) {
     $action = [string]$script:NextReadLineAction
     $script:NextReadLineAction = $null
+    if ($action -eq 'Explain') { return ConvertTo-AIExplainLine }
     if ($action -eq 'ForceShell' -or [string]::IsNullOrWhiteSpace($Line)) { return $Line }
 
     $trimmed = $Line.Trim()
@@ -64,44 +37,25 @@ function ConvertTo-AISubmittedLine([string]$Line) {
     if ($trimmed -match '^(?i:ai)\s+(?:clear|reset)$') { return 'Clear-PSAISession' }
     if ($trimmed -match '^(?i:ai)\s+new(?:\s+(.+))?$') {
         $title = if ($Matches[1]) { $Matches[1].Trim() } else { '新会话' }
-        $escapedTitle = $title.Replace("'", "''")
-        return "New-PSAISession -Title '$escapedTitle'"
+        return "New-PSAISession -Title '$($title.Replace("'", "''"))'"
     }
     if ($trimmed -match '^(?i:ai)\s+mode(?:\s+(Off|AI|Auto))?$') {
         if ($Matches[1]) { return "Set-PSAITerminalMode -Mode '$($Matches[1])'" }
         return 'Get-PSAITerminalMode'
     }
-    if ($trimmed -match '^(?i:ai)\s+resume\s+([a-f0-9]{32})$') {
-        return New-AIPendingInvocationLine (New-AITopLevelHarnessScript "Resume-PSAIRun -Id '$($Matches[1])'")
-    }
-    if ($trimmed -match '^(?i:ai)\s+resolve\s+([a-f0-9]{32})\s+(NotExecuted|Succeeded|Failed)$') {
-        return New-AIPendingInvocationLine (New-AITopLevelHarnessScript "Resolve-PSAIRun -Id '$($Matches[1])' -Outcome '$($Matches[2])'")
-    }
-    if ($trimmed -match '^(?i:ai)\s+(.+)$') {
-        $raw = $Matches[1].Trim()
-        Set-AILastSubmittedCommand $Line
-        return ConvertTo-AIIntentInvocationLine $raw -ExplicitAI
-    }
-    if ($action -eq 'ForceAI') {
-        Set-AILastSubmittedCommand $Line
-        return ConvertTo-AIIntentInvocationLine $Line -ExplicitAI
-    }
-    if ($trimmed -match '^(?i:Show-PSAIResultExplanation)(?:\s|$)' -or $script:Config.mode -eq 'Off') {
-        return $Line
-    }
-
-    Set-AILastSubmittedCommand $Line
-    if ($script:Config.mode -eq 'AI') { return ConvertTo-AIIntentInvocationLine $Line -ExplicitAI }
-    if ([PSAITerminal.AITerminalInputRouter]::IsIncomplete($Line)) { return $Line }
-    if ($script:Config.mode -in @('AI','Auto') -and (Test-AIAutoRoute $Line)) {
-        return ConvertTo-AIIntentInvocationLine $Line
-    }
-    if ($script:Config.mode -eq 'Auto') {
-        return New-AIPendingInvocationLine (ConvertTo-AIAutoShellLine $Line)
+    if ($trimmed -match '^(?i:ai)\s+(.+)$') { return ConvertTo-AIAgentLine $Matches[1].Trim() }
+    if ($action -eq 'ForceAI') { return ConvertTo-AIAgentLine $Line }
+    switch ([string]$script:Config.mode) {
+        'AI' { return ConvertTo-AIAgentLine $Line }
+        'Auto' {
+            # 只区分“可执行的 PowerShell”和“其他输入”；命令原样执行，不做包装。
+            if (-not [PSAITerminal.AITerminalInputRouter]::IsIncomplete($Line) -and (Test-AIAutoRoute $Line)) {
+                return ConvertTo-AIAgentLine $Line
+            }
+        }
     }
     $Line
 }
-
 function Invoke-AIEnterHandler {
     param([switch]$ForceAI)
     $line = Get-AICurrentBuffer
@@ -110,7 +64,6 @@ function Invoke-AIEnterHandler {
         # 注释只用于通过原生编辑器的续行判定，原文由宿主读取层消费一次。
         $bridge = (@($line -split '\r\n|\n|\r' | ForEach-Object { '# ' + $_ }) -join "`n")
         $script:PendingAIInputBridge = @{Original=$line;Submitted=$bridge}
-        Set-AILastSubmittedCommand $line
         [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($line)
         [void]$script:InternalHistoryLines.Add($bridge)
         Set-AICurrentBuffer $bridge
@@ -125,6 +78,15 @@ function Invoke-AIHostReadLine([bool]$LastRunStatus) {
     }
     if ($LastRunStatus) { $null = $true }
     else { Write-Error 'PSAITerminal input status preservation' -ErrorAction Ignore }
+    if ($script:NextInputBuffer) {
+        # Agent 选择“放入命令行”时，把命令写入控制台输入缓冲区，由用户修改后自行回车；不可用时放入历史记录。
+        $text = [string]$script:NextInputBuffer
+        $script:NextInputBuffer = $null
+        if (-not [PSAITerminal.AITerminalConsoleInput]::TryWrite($text)) {
+            [Microsoft.PowerShell.PSConsoleReadLine]::AddToHistory($text)
+            Write-AIColoredHost (Get-AIText 'CommandInHistory') DarkGray
+        }
+    }
     try { $line = & $script:OriginalPSConsoleHostReadLine }
     catch { $script:PendingAIInputBridge=$null; $script:NextReadLineAction=$null; throw }
     $bridge = $script:PendingAIInputBridge
@@ -225,16 +187,11 @@ if (-not $module) { throw 'PSAITerminal 输入路由的活动模块实例不存�
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
     } @() -Force:$Force)
     [void](Set-AIPSAIKeyHandler $script:Config.shortcuts.forceAI 'PSAIForceAI' {
-        $line = Get-AICurrentBuffer
-        if ($line) {
-            Set-AILastSubmittedCommand $line
-            $script:NextReadLineAction = 'ForceAI'
-        }
+        if (Get-AICurrentBuffer) { $script:NextReadLineAction = 'ForceAI' }
         Invoke-AIEnterHandler -ForceAI
     } @('SwitchPredictionView') -Force:$Force)
     [void](Set-AIPSAIKeyHandler $script:Config.shortcuts.forceShell 'PSAIForceShell' {
-        $line = Get-AICurrentBuffer
-        if ($line) { Set-AILastSubmittedCommand $line; $script:NextReadLineAction = 'ForceShell' }
+        if (Get-AICurrentBuffer) { $script:NextReadLineAction = 'ForceShell' }
         [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
     } @('CharacterSearch') -Force:$Force)
     if ($script:Config.shortcuts.openSettings) {
@@ -248,8 +205,7 @@ if (-not $module) { throw 'PSAITerminal 输入路由的活动模块实例不存�
         } @() -Force:$Force)
     }
     [void](Set-AIPSAIKeyHandler $script:Config.shortcuts.explainLast 'PSAIExplain' {
-        Update-AILastSubmittedFromHistory
-        Set-AICurrentBuffer 'Show-PSAIResultExplanation'; $script:NextReadLineAction = 'ForceShell'; [void]$script:InternalHistoryLines.Add('Show-PSAIResultExplanation'); [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+        Set-AICurrentBuffer '# PSAI F7'; $script:NextReadLineAction = 'Explain'; [void]$script:InternalHistoryLines.Add('# PSAI F7'); [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
     } @() -Force:$Force)
     $script:PSReadLineIntegrated = $true
 }

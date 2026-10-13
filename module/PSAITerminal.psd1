@@ -17,9 +17,7 @@
         'New-PSAIModel', 'Get-PSAIModel', 'Set-PSAIModel',
         'Select-PSAIModel', 'Remove-PSAIModel', 'Test-PSAIModel',
         'New-PSAISession', 'Get-PSAISession', 'Select-PSAISession', 'Clear-PSAISession',
-        'Start-PSAIRun', 'Get-PSAIRun', 'Resume-PSAIRun', 'Resolve-PSAIRun', 'Stop-PSAIRun',
-        'Start-PSAIToolExecution', 'Complete-PSAIToolExecution', 'Start-PSAIAutoFallback',
-        'Invoke-PSAI', 'Invoke-PSAIAutoCompletion', 'Show-PSAIResultExplanation',
+        'Invoke-PSAI',
         'Get-PSAIIntegrationStatus', 'Test-PSAIConfiguration',
         'Install-PSAIProfileIntegration', 'Uninstall-PSAIProfileIntegration',
         'Uninstall-PSAITerminal', 'Show-AICliHelp'

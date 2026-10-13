@@ -49,8 +49,33 @@ function Find-AILegacyOriginalPrompt {
     $null
 }
 
-function Invoke-AIWrappedPrompt {
-    $lastSuccess = $?
+# 记录上一条交互命令的结果；失败时提示 F7。AI 调度行和模块内部命令不记录。
+function Update-AILastCommandStatus([bool]$LastSuccess) {
+    $errorCount = $global:Error.Count
+    $newErrors = $errorCount -gt [int]$script:LastErrorCount
+    $script:LastErrorCount = $errorCount
+    $entry = Get-History -Count 1
+    if (-not $entry -or $entry.Id -eq $script:LastHistoryId) { return }
+    $script:LastHistoryId = $entry.Id
+    $line = [string]$entry.CommandLine
+    if ($line -match '^(?:\. \(Invoke-PSAI\)|# PSAI F7|(?:Set|Get)-PSAITerminalMode\b|Open-PSAI|Show-AICliHelp|Clear-PSAISession|New-PSAISession)') { return }
+    # Test-Path 不会向 $Error 写入记录，避免覆盖要诊断的真实错误。
+    $exitCode = if (Test-Path Variable:global:LASTEXITCODE) { [int]$global:LASTEXITCODE } else { 0 }
+    if ([string]$entry.ExecutionStatus -eq 'Stopped') { return }
+    $failed = -not $LastSuccess -or [string]$entry.ExecutionStatus -eq 'Failed'
+    $detail = if (-not $failed) { $null }
+        elseif ($newErrors -and $global:Error.Count) { Protect-AIText ($global:Error[0] | Out-String).Trim() 8192 }
+        elseif ($exitCode) { Get-AIText 'StepFailedExit' @($exitCode) }
+        else { Get-AIText 'StepFailed' }
+    $script:LastCommand = [pscustomobject]@{ Command = Protect-AIText $line 16384; Succeeded = -not $failed; Error = $detail
+        ExitCode = $exitCode; Source = 'Shell' }
+    if ($failed -and [string]$script:Config.mode -in @('AI','Auto') -and $script:Config.activeModel) {
+        Write-AIColoredHost "✗ $(Get-AIText 'CommandFailedHint')" DarkGray
+    }
+}
+
+function Invoke-AIWrappedPrompt([bool]$LastSuccess = $true) {
+    $lastSuccess = $LastSuccess
     $state = Get-AIPromptIntegrationState
     if ($script:PromptInvocationActive -or ($state -and [bool]$state.InvocationActive)) {
         return Get-AIDefaultPromptText
@@ -59,6 +84,8 @@ function Invoke-AIWrappedPrompt {
     $script:PromptInvocationActive = $true
     if ($state) { $state.InvocationActive = $true }
     try {
+        try { Update-AILastCommandStatus $lastSuccess }
+        catch { Write-Verbose "无法记录上一条命令状态：$($_.Exception.Message)" }
         $prefix = Get-AIPromptPrefix
         if ($prefix) {
             Write-AIColoredHost $prefix DarkCyan -NoNewline
@@ -96,13 +123,15 @@ function Register-AIPromptIntegration {
 
     $module = $ExecutionContext.SessionState.Module
     $script:PSAIPromptWrapper = {
+        # 必须是第一条语句，才能取到用户上一条命令的 $?。
+        $lastSuccess = $?
         $state = [AppDomain]::CurrentDomain.GetData('__PSAITerminalPromptIntegrationState')
         if ($state -and [bool]$state.InvocationActive) {
             $location = [string]$ExecutionContext.SessionState.Path.CurrentLocation
             if ([string]::IsNullOrWhiteSpace($location)) { $location = [Environment]::CurrentDirectory }
             "PS $location> "
         } elseif ($state -and $state.Owner) {
-            & $state.Owner { Invoke-AIWrappedPrompt }
+            & $state.Owner { param($status) Invoke-AIWrappedPrompt $status } $lastSuccess
         } else {
             $location = [string]$ExecutionContext.SessionState.Path.CurrentLocation
             if ([string]::IsNullOrWhiteSpace($location)) { $location = [Environment]::CurrentDirectory }

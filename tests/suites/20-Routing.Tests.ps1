@@ -90,8 +90,7 @@ $promptStatus = & $module {
     try {
         $script:Config.mode = 'Off'
         $script:OriginalPrompt = { if ($?) { 'success' } else { 'failure' } }
-        Write-Error 'prompt-status-probe' -ErrorAction Ignore
-        Invoke-AIWrappedPrompt
+        Invoke-AIWrappedPrompt $false
     } finally {
         $script:OriginalPrompt = $previousPrompt
         $script:Config.mode = $previousMode
@@ -137,10 +136,11 @@ $submittedLineProbe = & $module {
     $shellLine = ConvertTo-AISubmittedLine "  Write-Output '原文'  "
     $script:NextReadLineAction = 'ForceAI'
     $aiLine = ConvertTo-AISubmittedLine "  完全保留 大小写 '和引号'  "
-    [pscustomobject]@{Shell=$shellLine;AI=$aiLine;Last=$script:LastSubmittedCommand.Command}
+    $task = [string]$script:PendingInvocationScripts[[string]$script:NextPendingInvocationId]
+    [pscustomobject]@{Shell=$shellLine;AI=$aiLine;Task=$task}
 }
 Assert-Equal "  Write-Output '原文'  " $submittedLineProbe.Shell '强制 Shell 必须逐字返回用户提交的原文。'
-Assert-Equal "  完全保留 大小写 '和引号'  " $submittedLineProbe.Last '交给 AI 时必须逐字保存用户提交的原文。'
+Assert-True $submittedLineProbe.Task.Contains("'  完全保留 大小写 ''和引号''  '") '交给 AI 时必须逐字保留用户提交的原文。'
 Assert-Equal '. (Invoke-PSAI)' $submittedLineProbe.AI 'F2/ForceAI 必须保留显式交给 AI 的语义。'
 & $module { $script:Config.mode = 'Off'; $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId=$null }
 
@@ -164,20 +164,63 @@ Assert-Equal 314 $PendingScopeProbe '一次性调度必须保留调用者顶层�
 Assert-Equal 271 (Invoke-PendingScopeProbe) '一次性调度必须保留调用者顶层函数。'
 Assert-Throws { & $module { param($id) Get-AIPendingInvocationScript $id } $pendingId } '不存在或已经执行' '内部调度令牌不能重复执行。'
 
-# Auto 包装必须捕获终止错误，并保持顶层状态。
-$wrappedSuccess = & $module { ConvertTo-AIAutoShellLine '$AutoScopeProbe=91; Get-Date | Out-Null' }
-$tokens=$null; $parseErrors=$null
-[void][Management.Automation.Language.Parser]::ParseInput($wrappedSuccess,[ref]$tokens,[ref]$parseErrors)
-Assert-Equal 0 @($parseErrors).Count 'Auto 顶层包装必须是有效 PowerShell。'
-. ([scriptblock]::Create($wrappedSuccess))
-Assert-Equal 91 $AutoScopeProbe 'Auto 包装必须保留普通变量赋值。'
-$latest = & $module { $script:LastCommandResult }
-Assert-Equal $true $latest.Succeeded '成功命令的真实状态应被记录。'
+# Auto 只区分“可执行的 PowerShell”和“其他输入”；命令原样执行，不做包装。
+$routing = & $module {
+    $previousMode = $script:Config.mode
+    try {
+        $script:Config.mode = 'Auto'
+        foreach ($line in @('gti status','磁盘空间还剩多少','这个文件夹有多大','how much disk space is left','$x = )','using namespace System.IO','robocopy a b','Get-Date','if ($true) {')) {
+            $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId = $null
+            $result = ConvertTo-AISubmittedLine $line
+            [pscustomobject]@{Line=$line;Route=$(if ($result -eq '. (Invoke-PSAI)') { 'Agent' } elseif ($result -ceq $line) { 'Shell' } else { $result })}
+        }
+        $script:Config.mode = 'Off'
+        [pscustomobject]@{Line='Off:磁盘空间';Route=$(if ((ConvertTo-AISubmittedLine '磁盘空间') -ceq '磁盘空间') { 'Shell' } else { 'Agent' })}
+        $script:Config.mode = 'AI'
+        [pscustomobject]@{Line='AI:Get-Date';Route=$(if ((ConvertTo-AISubmittedLine 'Get-Date') -eq '. (Invoke-PSAI)') { 'Agent' } else { 'Shell' })}
+    } finally {
+        $script:Config.mode = $previousMode
+        $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId = $null
+    }
+}
+$expectedRoutes = [ordered]@{
+    'gti status'='Agent'; '磁盘空间还剩多少'='Agent'; '这个文件夹有多大'='Agent'; 'how much disk space is left'='Agent'; '$x = )'='Agent'
+    'using namespace System.IO'='Shell'; 'robocopy a b'='Shell'; 'Get-Date'='Shell'; 'if ($true) {'='Shell'; 'Off:磁盘空间'='Shell'; 'AI:Get-Date'='Agent'
+}
+foreach ($expected in $expectedRoutes.GetEnumerator()) {
+    Assert-Equal $expected.Value ($routing | Where-Object Line -eq $expected.Key).Route "路由错误：$($expected.Key)"
+}
+Assert-Equal 'Agent' (& $module { $script:NextReadLineAction = 'Explain'; $script:LastCommand = [pscustomobject]@{Command='gti';Succeeded=$false;Error='not found';ExitCode=0}
+    $line = ConvertTo-AISubmittedLine '# PSAI F7'
+    $script:LastCommand = $null; $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId = $null
+    if ($line -eq '. (Invoke-PSAI)') { 'Agent' } else { $line } }) 'F7 在上一条命令失败时必须进入诊断修复。'
+Assert-Match (& $module { $script:NextReadLineAction = 'Explain'; ConvertTo-AISubmittedLine '# PSAI F7' }) '^Write-Warning ' '没有最近命令时 F7 只提示。'
 
-$wrappedFailure = & $module { ConvertTo-AIAutoShellLine "throw 'auto-boom'" }
-$fallbackError = $null
-try { . ([scriptblock]::Create($wrappedFailure)) 2>$null } catch { $fallbackError = $_.Exception.Message }
-$failed = & $module { $script:LastCommandResult }
-Assert-Equal $false $failed.Succeeded '终止错误不能跳过 Auto 完成处理。'
-Assert-Match $failed.Error 'auto-boom' 'Auto 应保存真实终止错误。'
-Assert-Match $fallbackError '尚未配置活动模型' '失败后必须立即尝试交给 AI。'
+# 提示符记录上一条交互命令的状态；AI 调度行与模块内部命令不记录。
+$statusProbe = & $module {
+    $previousMode = $script:Config.mode
+    $script:FakeHistory = $null
+    function script:Get-History { param([int]$Count) [void]$Count; $script:FakeHistory }
+    try {
+        $script:Config.mode = 'Off'
+        $script:FakeHistory = [pscustomobject]@{Id=9001;CommandLine='Get-Item missing-file';ExecutionStatus='Completed'}
+        Write-Error 'status-probe-error' -ErrorAction SilentlyContinue 2>$null
+        $script:LastErrorCount = $global:Error.Count - 1
+        Update-AILastCommandStatus $false
+        $failed = $script:LastCommand
+        $script:FakeHistory = [pscustomobject]@{Id=9002;CommandLine='. (Invoke-PSAI)';ExecutionStatus='Completed'}
+        Update-AILastCommandStatus $false
+        $afterHarness = $script:LastCommand
+        $script:FakeHistory = [pscustomobject]@{Id=9003;CommandLine='Get-Date';ExecutionStatus='Completed'}
+        Update-AILastCommandStatus $true
+        [pscustomobject]@{Failed=$failed;AfterHarness=$afterHarness;Succeeded=$script:LastCommand}
+    } finally {
+        Remove-Item Function:\Get-History -ErrorAction SilentlyContinue
+        $script:Config.mode = $previousMode
+        $script:LastCommand = $null
+    }
+}
+Assert-Equal $false $statusProbe.Failed.Succeeded '失败命令必须记录为失败。'
+Assert-Match $statusProbe.Failed.Error 'status-probe-error' '失败命令必须记录新的错误信息。'
+Assert-True ([object]::ReferenceEquals($statusProbe.Failed, $statusProbe.AfterHarness)) 'AI 调度行不能覆盖上一条命令记录。'
+Assert-Equal $true $statusProbe.Succeeded.Succeeded '成功命令必须记录为成功。'

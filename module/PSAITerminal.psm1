@@ -43,8 +43,15 @@ $script:ConfigMigrated = $false
 $script:SessionSecrets = @{}
 $script:SecretMaskingCache = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $script:SecretMaskingCacheInitialized = $false
-$script:LastSubmittedCommand = $null
-$script:LastCommandResult = $null
+# 上一条交互命令（Shell 或 AI 执行）的结果，供 F7 诊断。
+$script:LastCommand = $null
+$script:LastHistoryId = [long](@(Get-History -Count 1) | ForEach-Object Id | Select-Object -First 1)
+$script:LastErrorCount = $global:Error.Count
+# 当前 Agent 任务（仅内存）、本会话已允许免审批的命令名，以及下次输入要预填的命令。
+$script:Agent = $null
+$script:SessionAllowedCommands = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+$script:NextInputBuffer = $null
+$script:AITexts = $null
 
 $script:PSReadLineIntegrated = $false
 $script:ShortcutMigrated = $false
@@ -70,7 +77,6 @@ $script:LastSecretStoreError = $null
 $script:Config = $null
 $script:MaximumConfigBytes = 1MB
 $script:MaximumSessionBytes = 16MB
-$script:MaximumRunBytes = 4MB
 $script:FileLockTimeoutMilliseconds = 10000
 $script:LastSessionCompressionFailureUtc = $null
 #endregion
@@ -116,9 +122,7 @@ Export-ModuleMember -Function @(
     'Get-PSAITerminalOption','Set-PSAITerminalOption','Open-PSAISettings','Open-PSAIModelSelector',
     'New-PSAIModel','Get-PSAIModel','Set-PSAIModel','Select-PSAIModel','Remove-PSAIModel','Test-PSAIModel',
     'New-PSAISession','Get-PSAISession','Select-PSAISession','Clear-PSAISession',
-    'Start-PSAIRun','Get-PSAIRun','Resume-PSAIRun','Resolve-PSAIRun','Stop-PSAIRun',
-    'Start-PSAIToolExecution','Complete-PSAIToolExecution','Start-PSAIAutoFallback',
-    'Invoke-PSAI','Invoke-PSAIAutoCompletion','Show-PSAIResultExplanation',
+    'Invoke-PSAI',
     'Get-PSAIIntegrationStatus','Test-PSAIConfiguration','Install-PSAIProfileIntegration','Uninstall-PSAIProfileIntegration',
     'Uninstall-PSAITerminal',
     'Show-AICliHelp'

@@ -282,13 +282,12 @@ function Show-AICliHelp {
         Write-Host '  ai new [title]             Create and switch to a new session'
         Write-Host '  ai mode [Off|AI|Auto]      View or switch operating mode'
         Write-Host '  ai help                    Show this command-line help'
-        Write-Host '  ai resume <RunId>          Resume an unfinished run'
         Write-Host '  Get-PSAIModel              List configured models'
         Write-Host '  Get-PSAISession            List persistent sessions'
         Write-Host '  Clear-PSAISession          Clear active session context'
         Write-Host '  New-PSAISession            Create a new session'
         Write-Host ''
-        Write-Host '  Shortcuts: F2 (Force AI) | F3 (Force Shell) | F6 (Cycle Mode) | F7 (Explain Last)'
+        Write-Host '  Shortcuts: F2 (Force AI) | F3 (Force Shell) | F6 (Cycle Mode) | F7 (Explain / Fix Last)'
     } else {
         Write-Host '  ai                         打开交互配置菜单'
         Write-Host '  ai <内容>                  显式询问 AI 或提出本地任务'
@@ -296,13 +295,12 @@ function Show-AICliHelp {
         Write-Host '  ai new [名称]              创建并切换到全新独立会话'
         Write-Host '  ai mode [Off|AI|Auto]      查看或切换工作模式'
         Write-Host '  ai help                    显示本命令行帮助'
-        Write-Host '  ai resume <RunId>          在顶层恢复未完成 Run'
         Write-Host '  Get-PSAIModel              查看已配置模型'
         Write-Host '  Get-PSAISession            查看持久会话列表'
         Write-Host '  Clear-PSAISession          清空当前激活会话'
         Write-Host '  New-PSAISession            新建会话'
         Write-Host ''
-        Write-Host '  快捷键提示: F2 (强制 AI) | F3 (强制 Shell) | F6 (切换模式) | F7 (解释最近命令)'
+        Write-Host '  快捷键提示: F2 (强制 AI) | F3 (强制 Shell) | F6 (切换模式) | F7 (解释或修复最近命令)'
     }
     Write-Host ''
 }
@@ -324,9 +322,9 @@ function Show-AIShortcuts {
     }
     Write-Host ''
     $shortcutText = if ((Get-AILanguage) -eq 'en-US') {
-        @('Send current input to AI','Run current input as PowerShell','Cycle Off / AI / Auto mode','Explain the most recent command','Submit using the current mode','Open settings')
+        @('Send current input to AI','Run current input as PowerShell','Cycle Off / AI / Auto mode','Explain the last command, or diagnose and fix it if it failed','Submit using the current mode','Open settings')
     } else {
-        @('把当前输入交给 AI，并立即提交','把当前输入按 PowerShell 执行，并立即提交','切换 Off / AI / Auto 模式','解释最近一次命令','按照当前 Off / AI / Auto 模式提交输入','打开设置')
+        @('把当前输入交给 AI，并立即提交','把当前输入按 PowerShell 执行，并立即提交','切换 Off / AI / Auto 模式','解释最近一次命令；失败时诊断并提出修复','按照当前 Off / AI / Auto 模式提交输入','打开设置')
     }
     Write-Host ('  {0,-16} {1}' -f $script:Config.shortcuts.forceAI, $shortcutText[0])
     Write-Host ('  {0,-16} {1}' -f $script:Config.shortcuts.forceShell, $shortcutText[1])
@@ -480,7 +478,9 @@ function Set-PSAITerminalOption {
         [ValidateRange(1024,65536)][int]$OutputCaptureCharacters,
         [Nullable[bool]]$ColorEnabled,
         [Nullable[bool]]$EnterRouting,
-        [ValidateSet('en-US','zh-CN')][string]$Language
+        [ValidateSet('en-US','zh-CN')][string]$Language,
+        # 免审批的命令名通配，例如 Get-*、git；高风险命令始终需要确认。
+        [AllowEmptyCollection()][string[]]$AutoApprove
     )
     $hasMaxAgentSteps = $PSBoundParameters.ContainsKey('MaxAgentSteps')
     $hasRequestTimeout = $PSBoundParameters.ContainsKey('RequestTimeoutSeconds')
@@ -490,6 +490,7 @@ function Set-PSAITerminalOption {
     $hasColor = $PSBoundParameters.ContainsKey('ColorEnabled')
     $hasEnterRouting = $PSBoundParameters.ContainsKey('EnterRouting')
     $hasLanguage = $PSBoundParameters.ContainsKey('Language')
+    $hasAutoApprove = $PSBoundParameters.ContainsKey('AutoApprove')
     Invoke-AIConfigMutation {
         if ($hasMaxAgentSteps) { $script:Config.execution.maxAgentSteps = $MaxAgentSteps }
         if ($hasRequestTimeout) { $script:Config.execution.requestTimeoutSeconds = $RequestTimeoutSeconds }
@@ -499,6 +500,7 @@ function Set-PSAITerminalOption {
         if ($hasColor) { $script:Config.appearance.colorEnabled = [bool]$ColorEnabled }
         if ($hasEnterRouting) { $script:Config.integrations.enterRouting = [bool]$EnterRouting }
         if ($hasLanguage) { $script:Config.language = $Language }
+        if ($hasAutoApprove) { $script:Config.execution.autoApprove = @($AutoApprove | Where-Object { $_ } | ForEach-Object { $_.Trim() }) }
     }
     if ($hasEnterRouting) {
         Unregister-AIPSReadLineIntegration

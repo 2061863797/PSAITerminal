@@ -73,26 +73,6 @@ if([IO.File]::ReadAllText('{CONFIG}') -cne $before){throw '会话操作改写了
     $null=Assert-HardeningThrows { Set-PSAITerminalOption -MaxAgentSteps 11 } '另一个 PowerShell'
     & $module { Initialize-AIState }
 
-    # 纯 PowerShell 保留旧值/未定义；原生命令保留本次退出码及立即捕获的结果。
-    foreach ($prior in @($null,42)) {
-        foreach ($nativeExit in @(0,7)) {
-            if($null -eq $prior){Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue}
-            else {Set-Variable LASTEXITCODE $prior -Scope Global}
-            $native="& '"+$env:ComSpec.Replace("'","''")+"' /d /c 'exit $nativeExit'"
-            $wrapped=& $module {param($line) ConvertTo-AIAutoShellLine $line} $native
-            try { . ([scriptblock]::Create($wrapped)) 2>$null }
-            catch { if ($_.Exception.Message -notmatch '尚未配置活动模型') { throw } }
-            Assert-Hardening ((Get-Variable LASTEXITCODE -Scope Global).Value -eq $nativeExit) 'Auto 覆盖了本次原生退出码。'
-            $result=& $module {$script:LastCommandResult}
-            Assert-Hardening ($result.ExitCode -eq $nativeExit -and $result.Succeeded -eq ($nativeExit -eq 0)) '原生执行结果记录错误。'
-        }
-        if($null -eq $prior){Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue}
-        else {Set-Variable LASTEXITCODE $prior -Scope Global}
-        $wrapped=& $module { ConvertTo-AIAutoShellLine 'Get-Date | Out-Null' }
-        . ([scriptblock]::Create($wrapped))
-        $current=Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
-        Assert-Hardening (($null -eq $current -and $null -eq $prior) -or ($current -and $current.Value -eq $prior)) '纯 PowerShell 改写了 LASTEXITCODE。'
-    }
     & $module {
         function Assert-Local($Condition,$Message){if(-not $Condition){throw $Message}}
         function Assert-Rejected([scriptblock]$Action){
@@ -100,28 +80,12 @@ if([IO.File]::ReadAllText('{CONFIG}') -cne $before){throw '会话操作改写了
             try{& $Action | Out-Null}catch{$rejected=$true}
             Assert-Local $rejected '无效提议被接受。'
         }
-        $valid=[ordered]@{purpose='查询日期';command='Get-Date';expectedOutcome='显示日期';sideEffects='无';rollbackHint='无需回滚';
-            plan=[ordered]@{mode='Single';steps=@('查询日期');completionCondition='日期已显示'};stepIndex=1;stepRole='Operation';afterSuccess='Complete'}
-        foreach($missing in @($valid.Keys)){
-            $proposalArguments=ConvertFrom-AIJson ($valid | ConvertTo-Json -Depth 10)
-            [void]$proposalArguments.Remove($missing)
-            Assert-Rejected { ConvertFrom-AIToolCall @{name='powershell';arguments=$proposalArguments} }
-            $text=ConvertTo-Json -InputObject @{name='powershell';arguments=$proposalArguments} -Depth 10
-            $extracted=Find-AITextToolCall $text
-            Assert-Local ($null -ne $extracted) '正文 JSON 缺字段不能跳过修复流程。'
-            Assert-Rejected { ConvertFrom-AIToolCall $extracted.ToolCall }
-            $lines=[Collections.Generic.List[string]]::new()
-            foreach($entry in $proposalArguments.GetEnumerator()){
-                if($entry.Key -eq 'plan'){
-                    $lines.Add('mode: Single');$lines.Add('steps: ["查询日期"]');$lines.Add('completionCondition: 日期已显示')
-                }else{$lines.Add($entry.Key+': '+$entry.Value)}
-            }
-            $extracted=Find-AITextToolCall ($lines -join [Environment]::NewLine)
-            Assert-Local ($null -ne $extracted) 'YAML 缺字段不能跳过修复流程。'
-            Assert-Rejected { ConvertFrom-AIToolCall $extracted.ToolCall }
+        foreach($arguments in @(@{purpose='缺少命令'},@{command='   '},@{command=42},'not-json')){
+            Assert-Rejected { ConvertFrom-AIToolCall @{name='powershell';arguments=$arguments} }
         }
+        Assert-Rejected { ConvertFrom-AIToolCall @{name='other';arguments=@{command='Get-Date'}} }
         foreach($command in @("Write-Output 'password=fixture-value'",('x'*16385))){
-            $proposalArguments=ConvertFrom-AIJson ($valid | ConvertTo-Json -Depth 10);$proposalArguments.command=$command
+            $proposalArguments=@{command=$command;purpose='敏感'}
             Assert-Rejected { ConvertFrom-AIToolCall @{name='powershell';arguments=$proposalArguments} }
             Assert-Local ($proposalArguments.command -ceq $command) '拒绝敏感命令时不能改写原文。'
         }
@@ -129,13 +93,15 @@ if([IO.File]::ReadAllText('{CONFIG}') -cne $before){throw '会话操作改写了
         foreach($line in @('Get-Date','if ($true) {',"'未闭合", '请问什么是进程')){
             $dispatch=ConvertTo-AISubmittedLine $line
             Assert-Local ($dispatch -eq '. (Invoke-PSAI)') 'AI 普通输入未交给 AI。'
-            Assert-Local ($script:LastSubmittedCommand.Command -ceq $line) 'AI 输入原文丢失。'
+            $pending=[string]$script:PendingInvocationScripts[[string]$script:NextPendingInvocationId]
+            Assert-Local $pending.Contains("'" + $line.Replace("'","''") + "'") 'AI 输入原文丢失。'
             $script:PendingInvocationScripts.Clear();$script:NextPendingInvocationId=$null
         }
         $script:NextReadLineAction='ForceShell'
         Assert-Local ((ConvertTo-AISubmittedLine 'if ($true) {') -ceq 'if ($true) {') 'F3 必须保留原生续行。'
         $script:Config.mode='Auto'
-        Assert-Local ((ConvertTo-AISubmittedLine '这个怎么办？') -match '^Write-Host ') 'Auto 模糊输入不得发起请求。'
+        Assert-Local ((ConvertTo-AISubmittedLine '这个怎么办？') -eq '. (Invoke-PSAI)') 'Auto 自然语言必须交给 AI，由模型决定回答还是提议命令。'
+        $script:PendingInvocationScripts.Clear();$script:NextPendingInvocationId=$null
         foreach($alias in @('dir','ls','gci','gc','cat','type','select','where','sort','measure')){
             Assert-Local ((Get-AICommandRisk "$alias .") -eq 'Low') "只读别名 $alias 被误判。"
         }

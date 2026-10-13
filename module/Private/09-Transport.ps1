@@ -44,28 +44,16 @@ function New-AIPowerShellToolSchema {
     [ordered]@{
         type = 'object'
         properties = [ordered]@{
-            purpose = @{type='string';description='执行这条命令的目的'}
-            command = @{type='string';description='完整的 PowerShell 命令'}
-            expectedOutcome = @{type='string';description='预期结果'}
-            sideEffects = @{type='string';description='可能副作用，没有则写“无”'}
-            rollbackHint = @{type='string';description='回滚方法；不可回滚时明确说明'}
-            plan = @{type='object';properties=[ordered]@{
-                mode=@{type='string';enum=@('Single','Multi')}
-                steps=@{type='array';items=@{type='string'};description='按执行顺序列出步骤摘要；需要验证产物时保留验证步骤'}
-                completionCondition=@{type='string';description='任务完成的可检验条件'}
-            };required=@('mode','steps','completionCondition');additionalProperties=$false}
-            stepIndex = @{type='integer';description='所属计划步骤，从 1 开始'}
-            stepRole = @{type='string';enum=@('Operation','Verify','Cleanup','Retry')}
-            afterSuccess = @{type='string';enum=@('Complete','Observe')}
+            command = @{type='string';description='One complete PowerShell command to run in the user''s current session.'}
+            purpose = @{type='string';description='One short sentence explaining why, in the user''s language.'}
         }
-        required = @('purpose','command','expectedOutcome','sideEffects','rollbackHint','plan','stepIndex','stepRole','afterSuccess')
+        required = @('command','purpose')
         additionalProperties = $false
     }
 }
-
 function Add-AIToolsToRequestBody([Collections.IDictionary]$Body, [string]$Protocol) {
     $schema = New-AIPowerShellToolSchema
-    $description = '在用户本地当前 PowerShell 会话中执行一条命令。仅在确实需要操作本机时调用。'
+    $description = 'Run one PowerShell command in the user''s local session after the user approves it. Use only when you need to inspect or change the machine.'
     if ($Protocol -eq 'Anthropic') {
         $Body.tools = @(@{name='powershell';description=$description;input_schema=$schema})
     } else {
@@ -152,52 +140,36 @@ function ConvertTo-AIProtocolMessages([Collections.IList]$StandardMessages, [str
 
 function New-AIRequestBody([Collections.IDictionary]$Model, [AllowNull()][string]$Prompt = $null,
     [switch]$EnableTools, [AllowNull()][Collections.IList]$Messages = $null) {
-    $baseSystem = if ((Get-AILanguage) -eq 'en-US') {
-        if ($EnableTools) {
-            @"
-You are an autonomous terminal agent running in the user's local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.
-
-[Agent Operating Rules]
-1. Tool Invocation: When executing commands, diagnosing errors with corrective commands, or inspecting the system, you MUST invoke the `powershell` tool call. Never output raw JSON tool parameter blocks in message text to substitute for tool calls.
-2. Explanations & Recovery: When recovering from a failed step or diagnosing syntax errors, explain the root cause clearly in plain text, then invoke the `powershell` tool with the corrective step.
-3. Simplicity First: When commands are required, prefer the shortest, most direct native PowerShell command. Never overcomplicate commands with unnecessary loops, multi-tier pipelines, redundant variables, custom Format-Table styling, or extra Write-Host dividers.
-4. Respect User Intent: Keep commands minimal and focused directly on the user's goal.
+    $english = (Get-AILanguage) -eq 'en-US'
+    $baseSystem = if ($EnableTools -and $english) {
+        @"
+You are a terminal assistant inside the user's local PowerShell session. Reply in English. Never request or reveal API keys.
+1. The input may be a question, a request to do something, or a mistyped PowerShell command. Answer questions directly in text without tools.
+2. To inspect or change the machine, call the powershell tool with exactly one command and a one-sentence purpose. Never write JSON in the message text instead of calling the tool.
+3. Prefer the shortest direct native command; no needless loops, formatting, or separator lines.
+4. Tool results tell you whether the command succeeded and what it printed. Continue from the real result. On failure, state the cause in one sentence before proposing a fix. When done, confirm the outcome in one or two sentences.
+5. If the user rejects a command, follow their feedback and do not repeat the same command.
 "@
-        } else {
-            @"
-You are an assistant running in the user's local PowerShell session. Reply in English. Do not assume a cloud server exists. Never request or reveal API keys.
-
-[Core Operating Rules]
-1. Direct Answers: For natural language inquiries (greetings, conceptual questions, syntax explanations, general text), reply directly with a clear and natural explanation in English.
-2. Code Correction: If the user asks to explain or fix code, directly diagnose the root cause, provide the corrected command in a ```powershell ... ``` block, and give practical advice.
-3. Simplicity First: When commands are required, prefer the shortest, most direct native PowerShell command. Never overcomplicate commands with unnecessary loops, multi-tier pipelines, redundant variables, custom Format-Table styling, or extra Write-Host dividers.
-4. Respect User Input: Keep explanations clear, direct, and concise.
+    } elseif ($EnableTools) {
+        @"
+你是运行在用户本地 PowerShell 会话中的终端助手。用简体中文回答；不要请求或输出 API Key。
+1. 用户的输入可能是问题、操作请求，或写错的 PowerShell 命令。只需要回答的问题直接用文字回答，不调用工具。
+2. 需要查看或改变本机状态时，调用 powershell 工具，每次只提议一条命令，并用一句话填写 purpose。不要在正文里写 JSON 代替工具调用。
+3. 优先使用最短、最直接的原生命令，不加多余的循环、格式化或分隔线。
+4. 工具结果会说明命令是否成功以及输出。根据真实结果继续；失败时先用一句话说明原因再提出修正命令；完成后用一两句话确认结果，不要长篇总结。
+5. 用户拒绝某条命令时，按用户的反馈调整，不要重复同一条命令。
 "@
-        }
+    } elseif ($english) {
+        @"
+You are an assistant inside the user's local PowerShell session. Reply in English. Never request or reveal API keys.
+Answer directly and concisely. When a command helps, show the shortest direct PowerShell command in a ```powershell block; you cannot run it yourself.
+"@
     } else {
-        if ($EnableTools) {
-            @"
-你是运行在用户本地 PowerShell 中的终端智能体。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。
-
-[智能体操作准则]
-1. 工具调用：当需要执行命令、验证结果或提出修复指令时，必须通过 API 提供的 `powershell` 工具调用发起，严禁在正文纯文本中输出 JSON 代码块来替代工具调用。
-2. 解释与诊断：在失败恢复或诊断代码时，在正文中用简明纯文本解释核心原因，同时必须通过 `powershell` 工具调用提出执行或修复步骤。
-3. 极简命令优先：优先输出单行、最少、最直接的原生 PowerShell 命令。严禁无必要的复杂化包装（严禁随意添加循环、多层管道、冗余变量、自定义 Format-Table 拼接或多余的 Write-Host 分隔线）。如果一条简单原生命令即可完成，直接给出该命令。
-4. 尊重用户原意：保持命令精简，紧密围绕用户目标，不要无意义地将其重写为多行复杂脚本。
+        @"
+你是运行在用户本地 PowerShell 会话中的助手。用简体中文回答；不要请求或输出 API Key。
+直接、简洁地回答。需要命令时，在 ```powershell 代码块中给出最短、最直接的 PowerShell 命令；你不能自己执行命令。
 "@
-        } else {
-            @"
-你是运行在用户本地 PowerShell 中的助手。用简体中文回答；不要假设存在云服务器；不要请求或输出 API Key。
-
-[核心操作准则]
-1. 问答直接：针对自然语言输入（日常问候、概念咨询、语法解释或纯文本疑问），直接给出清晰自然的中文解答；不要在桌面上搜索文件或执行任何无意义命令。
-2. 纠错与修改建议：如果用户输入的代码存在语法错误、命令拼写错误或运行异常，清晰分析核心错误原因，直接给出【修改后的正确指令】和简要优化建议，严禁将原命令过度复杂化。
-3. 极简命令优先：当确实需要操作本机时，优先输出单行、最少、最直接的原生 PowerShell 命令。严禁无必要的复杂化包装（严禁随意添加循环、多层管道、冗余变量、自定义 Format-Table 拼接或多余的 Write-Host 分隔线）。如果一条简单原生命令即可完成，直接给出该命令。
-4. 尊重用户原意：如果用户输入本身就是一段清晰的命令，仅在需要诊断或按要求调整时处理，不要无意义地将其重写为多行复杂脚本。
-"@
-        }
-    }
-    $runtimeContext = Get-AIRuntimeContextText
+    }    $runtimeContext = Get-AIRuntimeContextText
     $system = "$baseSystem`n`n$runtimeContext"
     $protocol = [string]$Model.protocol
     $hasMessages = ($null -ne $Messages -and $Messages.Count -gt 0)

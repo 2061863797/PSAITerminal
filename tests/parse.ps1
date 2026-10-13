@@ -15,9 +15,6 @@ $files = @(
     'module/PSAIStorageSafety.ps1',
     'tests/host-probe.ps1',
     'tests/run.ps1',
-    'tests/intent-probe.ps1',
-    'tests/approval-probe.ps1',
-    'tests/reliability.ps1',
     'tests/hardening.ps1',
     'tests/resources.ps1',
     'tests/common.ps1'

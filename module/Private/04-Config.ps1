@@ -86,6 +86,7 @@ function New-AIDefaultConfig {
             contextBudgetPercent = 75
             recentTurns = 8
             outputCaptureCharacters = 65536
+            autoApprove = @()
         }
         onboardingShown = $false
     }
@@ -280,6 +281,11 @@ function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
     Assert-AIIntegerValue $Candidate.execution.contextBudgetPercent 50 90 '上下文压缩阈值'
     Assert-AIIntegerValue $Candidate.execution.recentTurns 2 32 '压缩后保留轮数'
     Assert-AIIntegerValue $Candidate.execution.outputCaptureCharacters 1024 65536 '步骤输出上限'
+    $autoApprove = $Candidate.execution.autoApprove
+    if ($autoApprove -isnot [Collections.IList] -or $autoApprove.Count -gt 100 -or
+        @($autoApprove | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_.Length -gt 128 -or $_ -match '[\x00-\x1F\x7F-\x9F]' }).Count) {
+        throw '配置中的 autoApprove 必须是最多 100 个命令名通配的字符串数组。'
+    }
 }
 
 function Merge-AIConfig([Collections.IDictionary]$Loaded) {
@@ -334,7 +340,6 @@ function Initialize-AIState {
     $script:ConfigPath = Join-Path $script:ConfigDirectory 'config.json'
     $script:DataDirectory = Get-AIDataDirectory
     $script:SessionDirectory = Join-Path $script:DataDirectory 'sessions'
-    $script:RunDirectory = Join-Path $script:DataDirectory 'runs'
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:ConfigDirectory)
     [PSAITerminal.AITerminalAtomicFile]::EnsurePrivateDirectory($script:DataDirectory)
     $script:Config = New-AIDefaultConfig
