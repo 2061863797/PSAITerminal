@@ -5,7 +5,7 @@
 Assert-Equal $false (Test-Path -LiteralPath (Join-Path $env:PSAI_CONFIG_HOME 'config.json')) '模块导入不能隐式写入共享配置。'
 Set-PSAITerminalOption -Language en-US | Out-Null
 $config = Get-Content -LiteralPath (Join-Path $env:PSAI_CONFIG_HOME 'config.json') -Raw | ConvertFrom-Json
-Assert-Equal 2 $config.schemaVersion '配置必须写为 schemaVersion 2。'
+Assert-Equal 3 $config.schemaVersion '配置必须写为 schemaVersion 3。'
 Assert-Equal 'en-US' $config.language '新安装必须默认使用英文界面。'
 Assert-Equal 'en-US' (Get-PSAITerminalOption).Language '公开设置必须返回当前界面语言。'
 Set-PSAITerminalOption -Language zh-CN | Out-Null

@@ -60,27 +60,26 @@ function Select-AIRemoteModel([string]$Protocol, [uri]$Endpoint, [AllowNull()][s
     $visible[$choice - 1]
 }
 
-function Read-AIProtocol([string]$Current) {
+# 服务商预设：除 Anthropic 外都使用 OpenAI 兼容接口。
+function Read-AIProvider {
+    $providers = @(
+        [pscustomobject]@{Label='OpenAI';Protocol='OpenAIChat';Endpoint='https://api.openai.com'}
+        [pscustomobject]@{Label='Anthropic (Claude)';Protocol='Anthropic';Endpoint='https://api.anthropic.com'}
+        [pscustomobject]@{Label='Google Gemini';Protocol='OpenAIChat';Endpoint='https://generativelanguage.googleapis.com/v1beta/openai'}
+        [pscustomobject]@{Label='DeepSeek';Protocol='OpenAIChat';Endpoint='https://api.deepseek.com'}
+        [pscustomobject]@{Label='Ollama / LM Studio (local)';Protocol='OpenAIChat';Endpoint='http://127.0.0.1:11434'}
+        [pscustomobject]@{Label=$(if ((Get-AILanguage) -eq 'en-US') { 'Other OpenAI-compatible service' } else { '其他 OpenAI 兼容服务' });Protocol='OpenAIChat';Endpoint='https://api.openai.com'}
+    )
     Write-Host ''
-    Write-Host '1. OpenAI Responses'
-    Write-Host '2. OpenAI Chat / Compatible'
-    Write-Host '3. Anthropic'
-    Write-Host '4. Gemini Native'
-    Write-Host '5. Ollama'
+    for ($index = 0; $index -lt $providers.Count; $index++) { Write-Host "$($index + 1). $($providers[$index].Label)" }
     Write-Host "0. $(Get-AIText 'Cancel')"
-    $choice = Read-AIChoice (Get-AIText 'SelectProtocol') @(0,1,2,3,4,5) $null
-    switch ($choice) {
-        1 { 'OpenAIResponses' }
-        2 { 'OpenAIChat' }
-        3 { 'Anthropic' }
-        4 { 'GeminiNative' }
-        5 { 'Ollama' }
-        default { $null }
-    }
+    $choice = Read-AIChoice (Get-AIText 'SelectProtocol') @(0..$providers.Count) $null
+    if (-not $choice) { return $null }
+    $providers[$choice - 1]
 }
 
-function Get-AIInteractiveSessionOnlyChoice([string]$Protocol) {
-    if ($Protocol -eq 'Ollama' -or [PSAITerminal.PlatformCredentialStore]::IsAvailable) { return $false }
+function Get-AIInteractiveSessionOnlyChoice([string]$Endpoint) {
+    if ((Test-AIApiKeyOptional $Endpoint) -or [PSAITerminal.PlatformCredentialStore]::IsAvailable) { return $false }
     Write-Warning $(if ((Get-AILanguage) -eq 'en-US') { 'The system credential store is unavailable; the API key cannot be persisted securely.' } else { '系统密钥库当前不可用，API Key 无法安全持久化。' })
     if (Read-AIYesNo $(if ((Get-AILanguage) -eq 'en-US') { 'Use this API key only for the current PowerShell session? You will need to enter it again after closing the terminal.' } else { '是否仅在当前 PowerShell 会话中使用此 API Key？关闭终端后需要重新输入。' }) $true) {
         return $true
@@ -96,23 +95,25 @@ function Add-AIModelInteractive {
     $name = (Read-Host (Get-AIText 'AddModelName')).Trim()
     try { Assert-AIModelName $name } catch { Write-Warning $_.Exception.Message; return }
     if (Test-AIMapContains $script:Config.models $name) { Write-Warning (Get-AIText 'DuplicateModel' @($name)); return }
-    $protocol = Read-AIProtocol
-    if (-not $protocol) { return }
-    $defaultEndpoint = Get-AIDefaultEndpoint $protocol
+    $provider = Read-AIProvider
+    if (-not $provider) { return }
+    $protocol = $provider.Protocol
+    $defaultEndpoint = $provider.Endpoint
     $endpointText = (Read-Host $(if ((Get-AILanguage) -eq 'en-US') { "Base endpoint (press Enter to use $defaultEndpoint)" } else { "接口基础地址（留空使用 $defaultEndpoint）" })).Trim()
     if (-not $endpointText) { $endpointText = $defaultEndpoint }
     try { $endpoint = [uri](ConvertTo-AIEndpoint $protocol ([uri]$endpointText)) }
     catch { Write-Warning $_.Exception.Message; return }
 
-    $secure = $null
-    $plain = $null
-    if ($protocol -ne 'Ollama') {
-        $secure = Read-Host (Get-AIText 'ApiKey') -AsSecureString
-        if (-not $secure -or $secure.Length -eq 0) { Write-Warning $(if ((Get-AILanguage) -eq 'en-US') { 'API key cannot be empty.' } else { 'API Key 不能为空。' }); return }
-        $plain = ConvertFrom-AISecureString $secure
+    $keyOptional = Test-AIApiKeyOptional ([string]$endpoint)
+    $keyPrompt = if ($keyOptional) { "$(Get-AIText 'ApiKey') $(if ((Get-AILanguage) -eq 'en-US') { '(optional for local services)' } else { '（本机服务可留空）' })" } else { Get-AIText 'ApiKey' }
+    $secure = Read-Host $keyPrompt -AsSecureString
+    if (-not $secure -or $secure.Length -eq 0) {
+        if (-not $keyOptional) { Write-Warning $(if ((Get-AILanguage) -eq 'en-US') { 'API key cannot be empty.' } else { 'API Key 不能为空。' }); return }
+        $secure = $null
     }
-    $sessionOnly = Get-AIInteractiveSessionOnlyChoice $protocol
-    if ($protocol -ne 'Ollama' -and $null -eq $sessionOnly) { return }
+    $plain = if ($secure) { ConvertFrom-AISecureString $secure } else { $null }
+    $sessionOnly = if ($secure) { Get-AIInteractiveSessionOnlyChoice ([string]$endpoint) } else { $false }
+    if ($null -eq $sessionOnly) { return }
     try { $selection = Select-AIRemoteModel $protocol $endpoint $plain }
     finally { $plain = $null }
     if (-not $selection) { return }
@@ -126,7 +127,7 @@ function Add-AIModelInteractive {
         Write-AIColoredHost (Get-AIText 'ModelAdded') Green
     } catch {
         $failure = $_
-        if (-not $sessionOnly -and $protocol -ne 'Ollama' -and (Test-AISecretStoreException $failure.Exception) -and
+        if (-not $sessionOnly -and $secure -and (Test-AISecretStoreException $failure.Exception) -and
             (Read-AIYesNo (Get-AIText 'CredentialFallback') $true)) {
             try {
                 $parameters.SessionOnly = $true
@@ -144,26 +145,26 @@ function Edit-AIModelInteractive([string]$Name) {
     if (-not $current) { Write-Warning (Get-AIText 'ModelMissing'); return }
     Write-Host "$(Get-AIText 'CurrentProtocol'): $($current.protocol)"
     $changeProtocol = Read-AIYesNo (Get-AIText 'ChangeProtocol') $false
-    $protocol = if ($changeProtocol) { Read-AIProtocol } else { [string]$current.protocol }
-    if (-not $protocol) { return }
-    $endpointText = (Read-Host "$(Get-AIText 'Endpoint') [$($current.endpoint)]").Trim()
-    if (-not $endpointText) { $endpointText = [string]$current.endpoint }
+    $provider = if ($changeProtocol) { Read-AIProvider } else { [pscustomobject]@{Protocol=[string]$current.protocol;Endpoint=[string]$current.endpoint} }
+    if (-not $provider) { return }
+    $protocol = $provider.Protocol
+    $endpointText = (Read-Host "$(Get-AIText 'Endpoint') [$($provider.Endpoint)]").Trim()
+    if (-not $endpointText) { $endpointText = [string]$provider.Endpoint }
     try { $endpoint = [uri](ConvertTo-AIEndpoint $protocol ([uri]$endpointText)) }
     catch { Write-Warning $_.Exception.Message; return }
 
     $secure = $null
     $plain = $null
     $sessionOnly = $false
-    if ($protocol -ne 'Ollama') {
-        $replaceKey = $changeProtocol -or (Read-AIYesNo (Get-AIText 'UpdateApiKey') $false)
-        if ($replaceKey) {
-            $secure = Read-Host (Get-AIText 'NewApiKey') -AsSecureString
-            if (-not $secure -or $secure.Length -eq 0) { Write-Warning $(if ((Get-AILanguage) -eq 'en-US') { 'API key cannot be empty.' } else { 'API Key 不能为空。' }); return }
-            $plain = ConvertFrom-AISecureString $secure
-            $sessionOnly = Get-AIInteractiveSessionOnlyChoice $protocol
-            if ($null -eq $sessionOnly) { return }
-        } else { $plain = Get-AISecret $Name }
-    }
+    $keyOptional = Test-AIApiKeyOptional ([string]$endpoint)
+    $replaceKey = ($changeProtocol -and -not $keyOptional) -or (Read-AIYesNo (Get-AIText 'UpdateApiKey') $false)
+    if ($replaceKey) {
+        $secure = Read-Host (Get-AIText 'NewApiKey') -AsSecureString
+        if (-not $secure -or $secure.Length -eq 0) { Write-Warning $(if ((Get-AILanguage) -eq 'en-US') { 'API key cannot be empty.' } else { 'API Key 不能为空。' }); return }
+        $plain = ConvertFrom-AISecureString $secure
+        $sessionOnly = Get-AIInteractiveSessionOnlyChoice ([string]$endpoint)
+        if ($null -eq $sessionOnly) { return }
+    } elseif (-not $changeProtocol) { $plain = Get-AISecret $Name }
     try { $selection = Select-AIRemoteModel $protocol $endpoint $plain }
     finally { $plain = $null }
     if (-not $selection) { return }
@@ -205,7 +206,7 @@ function Open-AIModelDetail([string]$Name) {
         Write-Host "$(Get-AIText 'Model'): $($model.modelId)"
         Write-Host "$(Get-AIText 'EndpointLabel'): $($model.endpoint)"
         Write-Host "$(Get-AIText 'ModelStatus'): $(if($isActive){(Get-AIText 'ActiveStatus')}else{(Get-AIText 'InactiveStatus')})"
-        if ($model.protocol -ne 'Ollama') {
+        if ((Get-AISecret $Name) -or -not (Test-AIApiKeyOptional ([string]$model.endpoint))) {
             Write-Host "$(Get-AIText 'ApiKeyStatus'): $(if(Get-AISecret $Name){(Get-AIText 'ApiKeySaved')}else{(Get-AIText 'ApiKeyMissing')})"
         }
         Write-Host ''

@@ -192,7 +192,7 @@ if([IO.File]::ReadAllText('{CONFIG}') -cne $before){throw '会话操作改写了
     Remove-Item -LiteralPath $lockFile -Force -ErrorAction Stop
 
     # 凭据均为本次生成的合成测试目标；普通卸载保留，Purge 仅清理配置中的名称。
-    New-PSAIModel -Name $credentialNames[0] -Protocol Ollama -Endpoint http://127.0.0.1:11434 -ModelId fixture | Out-Null
+    New-PSAIModel -Name $credentialNames[0] -Protocol OpenAIChat -Endpoint http://127.0.0.1:11434 -ModelId fixture | Out-Null
     foreach($name in $credentialNames){[PSAITerminal.PlatformCredentialStore]::Set("PSAITerminal/Model/$name",'hardening-fixture')}
     [IO.File]::WriteAllText((Join-Path $env:PSAI_CONFIG_HOME 'unrelated.txt'),'keep')
     [IO.File]::WriteAllText((Join-Path $env:PSAI_DATA_HOME 'unrelated.txt'),'keep')

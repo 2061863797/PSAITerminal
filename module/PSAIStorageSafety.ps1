@@ -281,7 +281,7 @@ function Get-PSAIStoragePurgePlan([string]$ConfigDirectory, [string]$DataDirecto
     if ($hasConfig) {
         $config = Read-PSAIPurgeDocument $configPath 1MB
         $models = Get-PSAIStoredProperty $config 'models'
-        if ((Get-PSAIStoredProperty $config 'schemaVersion') -notin @(1,2) -or
+        if ((Get-PSAIStoredProperty $config 'schemaVersion') -notin @(1,2,3) -or
             (Get-PSAIStoredProperty $config 'mode') -notin @('Off','AI','Auto') -or
             $null -eq (Get-PSAIStoredProperty $config 'shortcuts') -or
             $null -eq (Get-PSAIStoredProperty $config 'execution') -or

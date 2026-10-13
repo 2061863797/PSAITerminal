@@ -48,7 +48,8 @@ if ($script:HostEdition -eq 'Core') {
     $script:OfficialIntegrationAvailable = $true
 }
 $script:ValidModes = @('Off', 'AI', 'Auto')
-$script:ValidProtocols = @('Anthropic', 'OpenAIChat', 'OpenAIResponses', 'GeminiNative', 'Ollama')
+$script:ValidProtocols = @('Anthropic', 'OpenAIChat')
+$script:ConfigMigrated = $false
 $script:SessionSecrets = @{}
 $script:SecretMaskingCache = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
 $script:SecretMaskingCacheInitialized = $false
@@ -108,7 +109,7 @@ Register-AIPromptIntegration
 if ($script:Config.activeModel -and $Host.Name -eq 'ConsoleHost' -and
     -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
     $configuredModel = $script:Config.models[[string]$script:Config.activeModel]
-    if ($configuredModel -and $configuredModel.protocol -ne 'Ollama' -and -not (Get-AISecret ([string]$configuredModel.name))) {
+    if ($configuredModel -and -not (Test-AIApiKeyOptional ([string]$configuredModel.endpoint)) -and -not (Get-AISecret ([string]$configuredModel.name))) {
         $detail = if ($script:LastSecretStoreError) { "系统密钥库无法读取：$script:LastSecretStoreError" }
             else { '缺少 API Key' }
         Write-Warning "PSAITerminal 模型 '$($configuredModel.name)' $detail。输入 ai，在模型详情中选择【编辑配置】后更新。"

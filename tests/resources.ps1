@@ -24,7 +24,7 @@ try {
     }finally{$delayed.Dispose();$cancellation.Dispose()}
     & $module {
         $originalClient=(Get-Command New-AIHttpClient -CommandType Function).ScriptBlock
-        $model=@{name='resource-fixture';protocol='Ollama';endpoint='http://127.0.0.1:1';modelId='fixture';parameters=@{};capabilities=@{streaming=$true;toolCalling=$true;usage=$false}}
+        $model=@{name='resource-fixture';protocol='OpenAIChat';endpoint='http://127.0.0.1:1';modelId='fixture';parameters=@{};capabilities=@{streaming=$true;toolCalling=$true;usage=$false}}
         try {
             function script:New-AIHttpClient($Endpoint) {
                 [void]$Endpoint

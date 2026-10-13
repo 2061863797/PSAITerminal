@@ -5,7 +5,7 @@
 New-PSAISession -Title '压缩测试' | Out-Null
 & $module { 1..10 | ForEach-Object { Add-AISessionTurn 'user' ("第 $_ 轮 " + ('x' * 900)) 'message' | Out-Null } }
 Set-PSAITerminalOption -ContextBudgetPercent 50 -RecentTurns 2 | Out-Null
-$summaryResponse = [ordered]@{message=@{content='保留目标与关键结果的压缩摘要。'};done=$true} | ConvertTo-Json -Compress
+$summaryResponse = ConvertTo-AIMockSse '保留目标与关键结果的压缩摘要。'
 $server = Start-AIMockServer @($summaryResponse)
 try {
     Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($server.Port)") -ContextWindow 1024 | Out-Null
@@ -18,14 +18,14 @@ try {
 # 原生工具调用、多步骤观察和 Run 检查点。
 $toolArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示当前日期';sideEffects='无';rollbackHint='无需回滚';plan=$singlePlan;stepIndex=1;stepRole='Operation';afterSuccess='Complete'}
 $invalidToolArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示当前日期';sideEffects='无'}
-$invalidToolResponse = [ordered]@{message=@{tool_calls=@(@{id='call-invalid';function=@{name='powershell';arguments=$invalidToolArguments}})};done=$true} | ConvertTo-Json -Depth 20 -Compress
-$toolResponse = [ordered]@{message=@{tool_calls=@(@{id='call-1';function=@{name='powershell';arguments=$toolArguments}})};done=$true} | ConvertTo-Json -Depth 20 -Compress
-$finalResponse = [ordered]@{message=@{content='任务已完成。'};done=$true} | ConvertTo-Json -Depth 10 -Compress
+$invalidToolResponse = ConvertTo-AIMockSse -ToolArguments $invalidToolArguments -ToolCallId 'call-invalid'
+$toolResponse = ConvertTo-AIMockSse -ToolArguments $toolArguments -ToolCallId 'call-1'
+$finalResponse = ConvertTo-AIMockSse '任务已完成。'
 $proposalServer = Start-AIMockServer @($invalidToolResponse,$toolResponse)
 $finalServer = Start-AIMockServer @($finalResponse)
 try {
     Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($proposalServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
-    New-PSAIModel -Name alternate -Protocol Ollama -Endpoint ([uri]"http://127.0.0.1:$($finalServer.Port)") -ModelId qwen3 `
+    New-PSAIModel -Name alternate -Protocol OpenAIChat -Endpoint ([uri]"http://127.0.0.1:$($finalServer.Port)") -ModelId qwen3 `
         -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
     function global:Read-Host { param([Parameter(ValueFromRemainingArguments)]$Arguments) [void]$Arguments; '' }
     try { $step = Start-PSAIRun -Task '告诉我当前日期' }
@@ -113,7 +113,7 @@ $bodyCases=@(
     $yamlToolText.Replace("Get-ItemProperty -Path 'HKLM:\Software'", "Write-Output '$([char]27)[31mfixture-value'")
 )
 foreach($bodyCase in $bodyCases){
-    $payload=@{message=@{content=$bodyCase};done=$true} | ConvertTo-Json -Depth 10 -Compress
+    $payload=ConvertTo-AIMockSse $bodyCase
     $bodyServer=Start-AIMockServer @($payload,$payload)
     try {
         Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($bodyServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null
@@ -123,7 +123,7 @@ foreach($bodyCase in $bodyCases){
 
 
 # 模拟真实模型仅返回 Markdown JSON 块时的端到端容错执行
-$fallbackResponse = [ordered]@{message=@{content=$markdownToolText};done=$true} | ConvertTo-Json -Depth 20 -Compress
+$fallbackResponse = ConvertTo-AIMockSse $markdownToolText
 $fallbackServer = Start-AIMockServer @($fallbackResponse)
 try {
     Set-PSAIModel -Name local -Endpoint ([uri]"http://127.0.0.1:$($fallbackServer.Port)") -Capabilities @{streaming=$true;toolCalling=$true;usage=$false} | Out-Null

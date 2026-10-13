@@ -8,7 +8,7 @@ $env:PSAI_CONFIG_HOME=Join-Path $testRoot 'config'; $env:PSAI_DATA_HOME=Join-Pat
 try {
     Import-Module $ModulePath -Force
     $module=Get-Module PSAITerminal
-    New-PSAIModel -Name fixture -Protocol Ollama -Endpoint http://127.0.0.1:11434 -ModelId fixture -Capabilities @{streaming=$false;toolCalling=$true;usage=$false} | Out-Null
+    New-PSAIModel -Name fixture -Protocol OpenAIChat -Endpoint http://127.0.0.1:11434 -ModelId fixture -Capabilities @{streaming=$false;toolCalling=$true;usage=$false} | Out-Null
     Select-PSAIModel fixture | Out-Null
     & $module {
         function Assert-Reliability($Condition, $Message) { if (-not $Condition) { throw $Message } }
@@ -62,7 +62,7 @@ try {
         $pending=[string]$script:PendingInvocationScripts[$script:NextPendingInvocationId]
         Assert-Reliability ($pending -match '诊断' -and $pending -match 'Start-PSAIRun') '语法错误必须进入诊断任务。'
         $script:PendingInvocationScripts.Clear(); $script:NextPendingInvocationId=$null
-        foreach ($protocol in @('OpenAIChat','OpenAIResponses','Anthropic','GeminiNative','Ollama')) {
+        foreach ($protocol in @('OpenAIChat','Anthropic')) {
             $body=[ordered]@{}; Add-AIToolsToRequestBody $body $protocol
             Assert-Reliability (($body | ConvertTo-Json -Depth 30) -match 'completionCondition') "$protocol 缺少规划协议。"
         }

@@ -4,14 +4,34 @@
 # 地址、控制字符、风险和工具 Schema。
 $cases = @(
     @('OpenAIChat','https://api.example.com','https://api.example.com/v1/chat/completions'),
-    @('OpenAIChat','https://api.example.com/v1','https://api.example.com/v1/chat/completions'),
-    @('OpenAIResponses','https://api.example.com/openai','https://api.example.com/openai/v1/responses'),
-    @('OpenAIResponses','https://api.example.com/openai/v1/','https://api.example.com/openai/v1/responses')
+    @('OpenAIChat','https://api.example.com/v1/','https://api.example.com/v1/chat/completions'),
+    @('OpenAIChat','https://api.example.com/openai','https://api.example.com/openai/v1/chat/completions'),
+    @('OpenAIChat','https://ark.cn-beijing.volces.com/api/v3','https://ark.cn-beijing.volces.com/api/v3/chat/completions'),
+    @('OpenAIChat','https://generativelanguage.googleapis.com/v1beta/openai','https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'),
+    @('OpenAIChat','http://127.0.0.1:11434','http://127.0.0.1:11434/v1/chat/completions'),
+    @('Anthropic','https://api.anthropic.com','https://api.anthropic.com/v1/messages')
 )
 foreach ($case in $cases) {
     $actual = [PSAITerminal.AITerminalEndpointResolver]::ResolveRequestEndpoint($case[0],[uri]$case[1]).AbsoluteUri
-    Assert-Equal $case[2] $actual 'OpenAI 地址解析错误。'
+    Assert-Equal $case[2] $actual "接口地址解析错误：$($case[1])"
 }
+Assert-Equal 'https://api.example.com/v1/models' ([PSAITerminal.AITerminalEndpointResolver]::ResolveModelListEndpoint('OpenAIChat',[uri]'https://api.example.com').AbsoluteUri) '模型列表地址解析错误。'
+Assert-Throws { [PSAITerminal.AITerminalEndpointResolver]::ResolveRequestEndpoint('GeminiNative',[uri]'https://example.com') } '不支持的模型协议' '已移除的协议不能继续解析。'
+$migratedModels = & $module {
+    foreach ($legacy in @(
+        [ordered]@{name='g';protocol='GeminiNative';endpoint='https://generativelanguage.googleapis.com';modelId='models/gemini-2.5-flash';parameters=[ordered]@{temperature=0.2}}
+        [ordered]@{name='o';protocol='Ollama';endpoint='http://127.0.0.1:11434/api';modelId='qwen3';parameters=[ordered]@{num_ctx=8192}}
+        [ordered]@{name='r';protocol='OpenAIResponses';endpoint='https://api.openai.com';modelId='gpt';parameters=[ordered]@{temperature=1}}
+    )) {
+        [void](Update-AILegacyModel $legacy 3>$null)
+        [pscustomobject]@{Name=$legacy.name;Protocol=$legacy.protocol;Endpoint=$legacy.endpoint;ModelId=$legacy.modelId;ParameterCount=$legacy.parameters.Count}
+    }
+}
+Assert-Equal 'OpenAIChat,OpenAIChat,OpenAIChat' (($migratedModels | ForEach-Object Protocol) -join ',') '旧协议必须迁移到 OpenAI 兼容接口。'
+Assert-Equal 'https://generativelanguage.googleapis.com/v1beta/openai' ($migratedModels | Where-Object Name -eq 'g').Endpoint 'Gemini 必须迁移到兼容接口地址。'
+Assert-Equal 'gemini-2.5-flash' ($migratedModels | Where-Object Name -eq 'g').ModelId 'Gemini 模型 ID 必须去掉 models/ 前缀。'
+Assert-Equal 'http://127.0.0.1:11434' ($migratedModels | Where-Object Name -eq 'o').Endpoint 'Ollama 必须去掉旧 /api 路径。'
+Assert-Equal '0,0,1' (($migratedModels | ForEach-Object ParameterCount) -join ',') '只有协议专属参数需要丢弃。'
 $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
 $escapeCharacter = [char]27
 $clean = $sanitizer.Sanitize("ok$($escapeCharacter)]0;bad") + $sanitizer.Sanitize("title`aEND")
@@ -63,7 +83,7 @@ $bodyRows = & $module {
         [pscustomobject]@{Protocol=$protocol;HasTools=($null -ne $body.tools);SystemText=$systemText}
     }
 }
-Assert-Equal 5 @($bodyRows | Where-Object HasTools).Count '五种协议都必须生成原生工具定义。'
+Assert-Equal 2 @($bodyRows | Where-Object HasTools).Count '两种协议都必须生成原生工具定义。'
 Assert-Match ([string]($bodyRows | Where-Object Protocol -eq 'OpenAIChat').SystemText) 'Reply in English' '默认英文设置也必须要求模型使用英文回答。'
 $chineseSystemText = & $module {
     $previousLanguage = $script:Config.language
@@ -148,17 +168,13 @@ try {
 
 $singlePlan = [ordered]@{mode='Single';steps=@('读取日期');completionCondition='显示日期'}
 $normalizedArguments = [ordered]@{purpose='读取日期';command='Get-Date';expectedOutcome='显示日期';sideEffects='无';rollbackHint='无需回滚';plan=$singlePlan;stepIndex=1;stepRole='Operation';afterSuccess='Complete'} | ConvertTo-Json -Depth 10 -Compress
-$responsesAdded = @{type='response.output_item.added';item=@{type='function_call';id='item-1';call_id='call-1';name='powershell';arguments=''}} | ConvertTo-Json -Compress
-$responsesDone = @{type='response.function_call_arguments.done';item_id='item-1';arguments=$normalizedArguments} | ConvertTo-Json -Compress
-$responsesCompleted = @{type='response.completed';response=@{usage=@{input_tokens=2;output_tokens=3}}} | ConvertTo-Json -Compress
+$openAIToolChunk = @{choices=@(@{delta=@{tool_calls=@(@{index=0;id='call-1';function=@{name='powershell';arguments=$normalizedArguments}})};finish_reason='tool_calls'})} | ConvertTo-Json -Depth 10 -Compress
 $anthropicStart = @{type='content_block_start';index=0;content_block=@{type='tool_use';id='call-1';name='powershell';input=@{}}} | ConvertTo-Json -Compress
 $anthropicDelta = @{type='content_block_delta';index=0;delta=@{type='input_json_delta';partial_json=$normalizedArguments}} | ConvertTo-Json -Compress
 $anthropicStop = @{type='message_stop'} | ConvertTo-Json -Compress
-$geminiPayload = @{candidates=@(@{finishReason='STOP';content=@{parts=@(@{functionCall=@{name='powershell';args=($normalizedArguments | ConvertFrom-Json)}})}});usageMetadata=@{promptTokenCount=2;candidatesTokenCount=3}} | ConvertTo-Json -Depth 20 -Compress
 $protocolFixtures = @(
-    @{Protocol='OpenAIResponses';Payload="data: $responsesAdded`r`n`r`ndata: $responsesDone`r`n`r`ndata: $responsesCompleted`r`n`r`n"},
-    @{Protocol='Anthropic';Payload="data: $anthropicStart`r`n`r`ndata: $anthropicDelta`r`n`r`ndata: $anthropicStop`r`n`r`n"},
-    @{Protocol='GeminiNative';Payload="data: $geminiPayload`r`n`r`n"}
+    @{Protocol='OpenAIChat';Payload="data: $openAIToolChunk`r`n`r`ndata: [DONE]`r`n`r`n"},
+    @{Protocol='Anthropic';Payload="data: $anthropicStart`r`n`r`ndata: $anthropicDelta`r`n`r`ndata: $anthropicStop`r`n`r`n"}
 )
 foreach ($fixture in $protocolFixtures) {
     $server = Start-AIMockServer @([string]$fixture.Payload)

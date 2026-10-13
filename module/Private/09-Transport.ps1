@@ -1,10 +1,13 @@
 ﻿# REST HTTP 客户端、请求体构造与 SSE 流式解析。
 
 function Resolve-AIRequestEndpoint([Collections.IDictionary]$Model) {
-    [PSAITerminal.AITerminalEndpointResolver]::ResolveRequestEndpoint(
-        [string]$Model.protocol,
-        [uri][string]$Model.endpoint,
-        [string]$Model.modelId).AbsoluteUri
+    [PSAITerminal.AITerminalEndpointResolver]::ResolveRequestEndpoint([string]$Model.protocol, [uri][string]$Model.endpoint).AbsoluteUri
+}
+
+# 本机环回地址上的服务（Ollama、LM Studio 等）可以不配置 API Key。
+function Test-AIApiKeyOptional([AllowNull()][string]$Endpoint) {
+    if ([string]::IsNullOrWhiteSpace($Endpoint)) { return $false }
+    try { ([uri]$Endpoint).IsLoopback } catch { $false }
 }
 
 function Get-AIProperty($Value, [string]$Name) {
@@ -19,23 +22,11 @@ function Get-AIProperty($Value, [string]$Name) {
 }
 
 function Add-AIAuthenticationHeaders([Net.Http.HttpRequestMessage]$Request, [string]$Protocol, [AllowNull()][string]$Secret) {
-    switch ($Protocol) {
-        'Anthropic' {
-            if (-not $Secret) { throw 'Anthropic 模型缺少 API Key。' }
-            $Request.Headers.Add('x-api-key', $Secret)
-            $Request.Headers.Add('anthropic-version', '2023-06-01')
-        }
-        'GeminiNative' {
-            if (-not $Secret) { throw 'Gemini 模型缺少 API Key。' }
-            $Request.Headers.Add('x-goog-api-key', $Secret)
-        }
-        { $_ -in @('OpenAIChat', 'OpenAIResponses') } {
-            if (-not $Secret) { throw 'OpenAI 模型缺少 API Key。' }
-            $Request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Secret)
-        }
-        'Ollama' {
-            # Ollama 默认不发送任何旧协议凭据。
-        }
+    if ($Protocol -eq 'Anthropic') {
+        $Request.Headers.Add('anthropic-version', '2023-06-01')
+        if ($Secret) { $Request.Headers.Add('x-api-key', $Secret) }
+    } elseif ($Secret) {
+        $Request.Headers.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $Secret)
     }
 }
 
@@ -75,22 +66,10 @@ function New-AIPowerShellToolSchema {
 function Add-AIToolsToRequestBody([Collections.IDictionary]$Body, [string]$Protocol) {
     $schema = New-AIPowerShellToolSchema
     $description = '在用户本地当前 PowerShell 会话中执行一条命令。仅在确实需要操作本机时调用。'
-    switch ($Protocol) {
-        'OpenAIChat' {
-            $Body.tools = @(@{type='function';function=@{name='powershell';description=$description;parameters=$schema;strict=$true}})
-            $Body.tool_choice = 'auto'
-        }
-        'OpenAIResponses' {
-            $Body.tools = @(@{type='function';name='powershell';description=$description;parameters=$schema;strict=$true})
-            $Body.tool_choice = 'auto'
-        }
-        'Anthropic' { $Body.tools = @(@{name='powershell';description=$description;input_schema=$schema}) }
-        'GeminiNative' {
-            $Body.tools = @(@{functionDeclarations=@(@{name='powershell';description=$description;parameters=$schema})})
-        }
-        'Ollama' {
-            $Body.tools = @(@{type='function';function=@{name='powershell';description=$description;parameters=$schema}})
-        }
+    if ($Protocol -eq 'Anthropic') {
+        $Body.tools = @(@{name='powershell';description=$description;input_schema=$schema})
+    } else {
+        $Body.tools = @(@{type='function';function=@{name='powershell';description=$description;parameters=$schema}})
     }
 }
 
@@ -155,30 +134,6 @@ function ConvertTo-AIProtocolMessages([Collections.IList]$StandardMessages, [str
                 $list.Insert(0, [ordered]@{ role = 'user'; content = 'Hello' })
             }
             return $list
-        }
-        'GeminiNative' {
-            $list = [Collections.Generic.List[object]]::new()
-            foreach ($item in $StandardMessages) {
-                $role = if ([string]$item.role -eq 'assistant') { 'model' } else { 'user' }
-                $content = [string]$item.content
-                if ($list.Count -gt 0 -and $list[$list.Count - 1].role -eq $role) {
-                    $list[$list.Count - 1].parts[0].text += "`n`n$content"
-                } else {
-                    $list.Add([ordered]@{ role = $role; parts = @(@{ text = $content }) })
-                }
-            }
-            if ($list.Count -gt 0 -and $list[0].role -ne 'user') {
-                $list.Insert(0, [ordered]@{ role = 'user'; parts = @(@{ text = 'Hello' }) })
-            }
-            return $list
-        }
-        'OpenAIResponses' {
-            $lines = [Collections.Generic.List[string]]::new()
-            foreach ($item in $StandardMessages) {
-                $prefix = if ([string]$item.role -eq 'assistant') { 'AI' } else { 'User' }
-                $lines.Add("[$prefix] $($item.content)")
-            }
-            return ($lines -join "`n`n")
         }
         default {
             $list = [Collections.Generic.List[object]]::new()
@@ -247,32 +202,17 @@ You are an assistant running in the user's local PowerShell session. Reply in En
     $protocol = [string]$Model.protocol
     $hasMessages = ($null -ne $Messages -and $Messages.Count -gt 0)
 
-    $body = if ($hasMessages) {
-        $protocolMessages = ConvertTo-AIProtocolMessages $Messages $protocol $system
-        switch ($protocol) {
-            'Anthropic' { [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=$protocolMessages;stream=$true} }
-            'OpenAIChat' { [ordered]@{model=$Model.modelId;messages=$protocolMessages;stream=$true} }
-            'OpenAIResponses' { [ordered]@{model=$Model.modelId;instructions=$system;input=$protocolMessages;stream=$true} }
-            'GeminiNative' { [ordered]@{systemInstruction=@{parts=@(@{text=$system})};contents=$protocolMessages} }
-            'Ollama' { [ordered]@{model=$Model.modelId;messages=$protocolMessages;stream=$true} }
-        }
+    if (-not $hasMessages) { $Messages = @([ordered]@{role='user';content=$Prompt}) }
+    $protocolMessages = ConvertTo-AIProtocolMessages $Messages $protocol $system
+    $body = if ($protocol -eq 'Anthropic') {
+        [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=$protocolMessages;stream=$true}
     } else {
-        switch ($protocol) {
-            'Anthropic' { [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=@(@{role='user';content=$Prompt});stream=$true} }
-            'OpenAIChat' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
-            'OpenAIResponses' { [ordered]@{model=$Model.modelId;instructions=$system;input=$Prompt;stream=$true} }
-            'GeminiNative' { [ordered]@{systemInstruction=@{parts=@(@{text=$system})};contents=@(@{role='user';parts=@(@{text=$Prompt})})} }
-            'Ollama' { [ordered]@{model=$Model.modelId;messages=@(@{role='system';content=$system},@{role='user';content=$Prompt});stream=$true} }
-        }
+        [ordered]@{model=$Model.modelId;messages=$protocolMessages;stream=$true}
     }
     if ($Model.parameters -is [Collections.IDictionary]) {
-        if ($Model.protocol -eq 'GeminiNative') { $body.generationConfig = $Model.parameters }
-        elseif ($Model.protocol -eq 'Ollama') { $body.options = $Model.parameters }
-        else {
-            foreach ($entry in $Model.parameters.GetEnumerator()) {
-                if ([string]$entry.Key -notin @('model','messages','input','instructions','system','tools','stream')) {
-                    $body[[string]$entry.Key] = $entry.Value
-                }
+        foreach ($entry in $Model.parameters.GetEnumerator()) {
+            if ([string]$entry.Key -notin @('model','messages','system','tools','stream')) {
+                $body[[string]$entry.Key] = $entry.Value
             }
         }
     }
@@ -302,11 +242,6 @@ function Read-AIStreamPayloads([IO.StreamReader]$Reader, [string]$Protocol, [Thr
     $dataCharacters = 0
     while ($null -ne ($line = [PSAITerminal.AITerminalHttpContent]::ReadLine($Reader, $CancellationToken))) {
         if ($line.Length -gt 1MB) { throw '模型流式响应的单行数据超过 1 MiB 上限。' }
-        if ($Protocol -eq 'Ollama' -and $line -and -not $line.StartsWith('data:') -and
-            -not $line.StartsWith('event:') -and -not $line.StartsWith('id:') -and -not $line.StartsWith('retry:')) {
-            $line.Trim()
-            continue
-        }
         if (-not $line) {
             if ($data.Count) { $data -join "`n"; $data.Clear(); $dataCharacters = 0 }
             continue
@@ -341,8 +276,8 @@ function Invoke-AIModelText {
         [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None
     )
     $endpoint = Resolve-AIRequestEndpoint $Model
-    $secret = if ($Model.protocol -eq 'Ollama') { $null } elseif ($PSBoundParameters.ContainsKey('SecretOverride')) { $SecretOverride } else { Get-AISecret ([string]$Model.name) }
-    if ($Model.protocol -ne 'Ollama' -and -not $secret) { throw "模型 '$($Model.name)' 没有可用 API Key。" }
+    $secret = if ($PSBoundParameters.ContainsKey('SecretOverride')) { $SecretOverride } else { Get-AISecret ([string]$Model.name) }
+    if (-not $secret -and -not (Test-AIApiKeyOptional ([string]$Model.endpoint))) { throw "模型 '$($Model.name)' 没有可用 API Key。" }
     $json = if ($Messages -and $Messages.Count -gt 0) {
         New-AIRequestBody $Model -Messages $Messages -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
     } else {
@@ -390,7 +325,6 @@ function Invoke-AIModelText {
     $responseState = [ordered]@{Terminal=$false;InputTokens=0L;OutputTokens=0L}
     $first = $true
     $toolCalls = [ordered]@{}
-    $toolItemMap = @{}
     $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
     $reader = $null
     try {
@@ -430,35 +364,6 @@ function Invoke-AIModelText {
                         if ($null -ne (Get-AIProperty $choice 'finish_reason')) { $responseState.Terminal = $true }
                     }
                 }
-                'OpenAIResponses' {
-                    $type = [string](Get-AIProperty $chunk 'type')
-                    if ($type -eq 'response.output_text.delta') { $delta = Get-AIProperty $chunk 'delta' }
-                    elseif ($type -eq 'response.output_item.added') {
-                        $item = Get-AIProperty $chunk 'item'
-                        if ([string](Get-AIProperty $item 'type') -eq 'function_call') {
-                            $itemId = [string](Get-AIProperty $item 'id')
-                            $callId = [string](Get-AIProperty $item 'call_id')
-                            if (-not $callId) { $callId = $itemId }
-                            $toolCalls[$callId] = [ordered]@{id=$callId;name=[string](Get-AIProperty $item 'name');arguments=[string](Get-AIProperty $item 'arguments')}
-                            if ($itemId) { $toolItemMap[$itemId] = $callId }
-                        }
-                    }
-                    elseif ($type -eq 'response.function_call_arguments.delta') {
-                        $key = [string](Get-AIProperty $chunk 'item_id')
-                        if (Test-AIMapContains $toolItemMap $key) { $key = [string]$toolItemMap[$key] }
-                        if (Test-AIMapContains $toolCalls $key) { $toolCalls[$key].arguments += [string](Get-AIProperty $chunk 'delta') }
-                    }
-                    elseif ($type -eq 'response.function_call_arguments.done') {
-                        $key = [string](Get-AIProperty $chunk 'item_id')
-                        if (Test-AIMapContains $toolItemMap $key) { $key = [string]$toolItemMap[$key] }
-                        if (Test-AIMapContains $toolCalls $key) { $toolCalls[$key].arguments = [string](Get-AIProperty $chunk 'arguments') }
-                    }
-                    elseif ($type -eq 'response.completed') {
-                        $responseState.Terminal = $true
-                        $usage = Get-AIProperty (Get-AIProperty $chunk 'response') 'usage'
-                        if ($usage) { $responseState.InputTokens=[long](Get-AIProperty $usage 'input_tokens');$responseState.OutputTokens=[long](Get-AIProperty $usage 'output_tokens') }
-                    }
-                }
                 'Anthropic' {
                     $type = [string](Get-AIProperty $chunk 'type')
                     if ($type -eq 'content_block_start') {
@@ -486,38 +391,9 @@ function Invoke-AIModelText {
                     elseif ($type -eq 'message_stop') { $responseState.Terminal = $true }
                     $usage = Get-AIProperty (Get-AIProperty $chunk 'message') 'usage'
                     if ($usage) { $responseState.InputTokens=[long](Get-AIProperty $usage 'input_tokens');$responseState.OutputTokens=[long](Get-AIProperty $usage 'output_tokens') }
-                }
-                'GeminiNative' {
-                    $metadata = Get-AIProperty $chunk 'usageMetadata'
-                    if ($metadata) { $responseState.InputTokens=[long](Get-AIProperty $metadata 'promptTokenCount');$responseState.OutputTokens=[long](Get-AIProperty $metadata 'candidatesTokenCount') }
-                    $candidates = @(Get-AIProperty $chunk 'candidates')
-                    if ($candidates.Count) {
-                        $candidate = $candidates[0]
-                        if (Get-AIProperty $candidate 'finishReason') { $responseState.Terminal = $true }
-                        $parts = @(Get-AIProperty (Get-AIProperty $candidate 'content') 'parts')
-                        foreach ($part in $parts) {
-                            $functionCall = Get-AIProperty $part 'functionCall'
-                            if ($functionCall) {
-                                $key = [string]$toolCalls.Count
-                                $toolCalls[$key] = [ordered]@{id=[guid]::NewGuid().ToString('N');name=[string](Get-AIProperty $functionCall 'name');arguments=(Get-AIProperty $functionCall 'args' | ConvertTo-Json -Depth 30 -Compress)}
-                            } elseif (-not (Get-AIProperty $part 'thought')) { $delta += [string](Get-AIProperty $part 'text') }
-                        }
-                    }
-                }
-                'Ollama' {
-                    if ([bool](Get-AIProperty $chunk 'done')) { $responseState.Terminal = $true }
-                    $message = Get-AIProperty $chunk 'message'
-                    $delta = Get-AIProperty $message 'content'
-                    foreach ($call in @(Get-AIProperty $message 'tool_calls')) {
-                        if (-not $call) { continue }
-                        $function = Get-AIProperty $call 'function'
-                        $key = [string]$toolCalls.Count
-                        $arguments = Get-AIProperty $function 'arguments'
-                        if ($arguments -isnot [string]) { $arguments = $arguments | ConvertTo-Json -Depth 30 -Compress }
-                        $toolCalls[$key] = [ordered]@{id=[string](Get-AIProperty $call 'id');name=[string](Get-AIProperty $function 'name');arguments=[string]$arguments}
-                    }
-                    $responseState.InputTokens = [long](Get-AIProperty $chunk 'prompt_eval_count')
-                    $responseState.OutputTokens = [long](Get-AIProperty $chunk 'eval_count')
+                    # message_delta 携带最终输出用量。
+                    $finalUsage = Get-AIProperty $chunk 'usage'
+                    if ($type -eq 'message_delta' -and $finalUsage) { $responseState.OutputTokens=[long](Get-AIProperty $finalUsage 'output_tokens') }
                 }
             }
             if ($delta) {

@@ -1,12 +1,7 @@
 ﻿# 模型配置的增删改查、远程模型列表与连通性测试。
 
 function Get-AIDefaultEndpoint([string]$Protocol) {
-    switch ($Protocol) {
-        'Anthropic' { 'https://api.anthropic.com' }
-        'GeminiNative' { 'https://generativelanguage.googleapis.com' }
-        'Ollama' { 'http://127.0.0.1:11434' }
-        default { 'https://api.openai.com' }
-    }
+    if ($Protocol -eq 'Anthropic') { 'https://api.anthropic.com' } else { 'https://api.openai.com' }
 }
 
 function Get-AIActiveModel {
@@ -19,7 +14,7 @@ function Get-AIActiveModel {
 
 function Assert-AIActiveModelReady {
     $model = Get-AIActiveModel
-    if ($model.protocol -ne 'Ollama' -and -not (Get-AISecret ([string]$model.name))) {
+    if (-not (Test-AIApiKeyOptional ([string]$model.endpoint)) -and -not (Get-AISecret ([string]$model.name))) {
         if ($script:LastSecretStoreError) { throw "系统密钥库无法读取：$script:LastSecretStoreError" }
         throw "模型 '$($model.name)' 缺少 API Key。请输入 ai，打开【模型配置】，选择该模型后编辑配置并更新 API Key。"
     }
@@ -29,7 +24,7 @@ function Assert-AIActiveModelReady {
 function New-PSAIModel {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][ValidateSet('Anthropic','OpenAIChat','OpenAIResponses','GeminiNative','Ollama')][string]$Protocol,
+        [Parameter(Mandatory)][ValidateSet('Anthropic','OpenAIChat')][string]$Protocol,
         [Parameter(Mandatory)][uri]$Endpoint,
         [Parameter(Mandatory)][string]$ModelId,
         [Security.SecureString]$ApiKey,
@@ -42,10 +37,9 @@ function New-PSAIModel {
     Assert-AIModelName $Name
     Assert-AIModelId $ModelId
     if (Test-AIMapContains $script:Config.models $Name) { throw "模型配置已存在：$Name" }
-    if ($Protocol -eq 'Ollama' -and $ApiKey) { throw 'Ollama 默认不发送 API Key，请移除 -ApiKey。' }
-    if ($Protocol -ne 'Ollama' -and -not $ApiKey) { throw "$Protocol 必须提供 API Key。" }
     Assert-AIModelParameters $Parameters
     $normalizedEndpoint = ConvertTo-AIEndpoint $Protocol $Endpoint
+    if (-not $ApiKey -and -not (Test-AIApiKeyOptional $normalizedEndpoint)) { throw '远程接口必须提供 API Key；只有本机地址可以留空。' }
     $previous = Copy-AIConfig
     $oldSecret = Get-AISecret $Name
     $oldSecretWasSessionOnly = $script:SessionSecrets.ContainsKey($Name)
@@ -56,7 +50,7 @@ function New-PSAIModel {
             protocol = $Protocol
             endpoint = $normalizedEndpoint
             modelId = $ModelId.Trim()
-            credentialTarget = if ($Protocol -eq 'Ollama') { $null } else { Get-AISecretTarget $Name }
+            credentialTarget = if ($ApiKey) { Get-AISecretTarget $Name } else { $null }
             contextWindow = $ContextWindow
             capabilities = ConvertTo-AICapabilities $Capabilities
             parameters = $Parameters
@@ -96,7 +90,7 @@ function Get-PSAIModel {
             ContextWindow = [int]$_.contextWindow
             Capabilities = [pscustomobject]$_.capabilities
             Active = ([string]$_.name -eq [string]$script:Config.activeModel)
-            HasSecret = if ($_.protocol -eq 'Ollama') { $false } else { [bool](Get-AISecret ([string]$_.name)) }
+            HasSecret = [bool](Get-AISecret ([string]$_.name))
         }
     }
 }
@@ -104,7 +98,7 @@ function Get-PSAIModel {
 function Set-PSAIModel {
     [CmdletBinding()] param(
         [Parameter(Mandatory)][string]$Name,
-        [ValidateSet('Anthropic','OpenAIChat','OpenAIResponses','GeminiNative','Ollama')][string]$Protocol,
+        [ValidateSet('Anthropic','OpenAIChat')][string]$Protocol,
         [uri]$Endpoint,
         [string]$ModelId,
         [Security.SecureString]$ApiKey,
@@ -123,9 +117,6 @@ function Set-PSAIModel {
         if ($protocolChanged -and -not $PSBoundParameters.ContainsKey('Endpoint')) {
             throw '更改协议时必须同时提供新的接口地址。'
         }
-        if ($protocolChanged -and $Protocol -ne 'Ollama' -and -not $ApiKey) {
-            throw '更改到需要鉴权的协议时必须同时提供新的 API Key，旧协议密钥不会复用。'
-        }
         if ($PSBoundParameters.ContainsKey('Protocol')) { $model.protocol = $Protocol }
         if ($PSBoundParameters.ContainsKey('Endpoint')) { $model.endpoint = ConvertTo-AIEndpoint ([string]$model.protocol) $Endpoint }
         else { $model.endpoint = ConvertTo-AIEndpoint ([string]$model.protocol) ([uri][string]$model.endpoint) }
@@ -137,19 +128,21 @@ function Set-PSAIModel {
         if ($PSBoundParameters.ContainsKey('Parameters')) { Assert-AIModelParameters $Parameters; $model.parameters = $Parameters }
         if ($PSBoundParameters.ContainsKey('Capabilities')) { $model.capabilities = ConvertTo-AICapabilities $Capabilities }
 
-        if ($model.protocol -eq 'Ollama') {
-            $model.credentialTarget = $null
-            Remove-AISecret $Name
-        } else {
-            $model.credentialTarget = Get-AISecretTarget $Name
-            if ($ApiKey) {
-                $plain = ConvertFrom-AISecureString $ApiKey
-                try { Save-AISecret $Name $plain -SessionOnly:$SessionOnly }
-                finally { $plain = $null }
-            } elseif (-not (Get-AISecret $Name)) {
-                throw "$($model.protocol) 必须配置 API Key。"
-            }
+        if ($protocolChanged -and -not $ApiKey -and -not (Test-AIApiKeyOptional ([string]$model.endpoint))) {
+            throw '更改协议时必须同时提供新的 API Key，旧协议密钥不会复用。'
         }
+        if ($ApiKey) {
+            $plain = ConvertFrom-AISecureString $ApiKey
+            try { Save-AISecret $Name $plain -SessionOnly:$SessionOnly }
+            finally { $plain = $null }
+        } elseif ($protocolChanged) {
+            Remove-AISecret $Name
+        }
+        $hasSecret = [bool](Get-AISecret $Name)
+        if (-not $hasSecret -and -not (Test-AIApiKeyOptional ([string]$model.endpoint))) {
+            throw '远程接口必须配置 API Key；只有本机地址可以留空。'
+        }
+        $model.credentialTarget = if ($hasSecret) { Get-AISecretTarget $Name } else { $null }
         Save-AIConfig
     } catch {
         $failure = $_
@@ -212,14 +205,14 @@ function Resolve-AIModelListEndpoint([string]$Protocol, [uri]$Endpoint) {
 
 function Get-AIRemoteModels {
     [CmdletBinding()] param(
-        [Parameter(Mandatory)][ValidateSet('Anthropic','OpenAIChat','OpenAIResponses','GeminiNative','Ollama')][string]$Protocol,
+        [Parameter(Mandatory)][ValidateSet('Anthropic','OpenAIChat')][string]$Protocol,
         [Parameter(Mandatory)][uri]$Endpoint,
         [AllowNull()][string]$Secret,
         [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None
     )
     $normalized = [uri](ConvertTo-AIEndpoint $Protocol $Endpoint)
     $listEndpoint = Resolve-AIModelListEndpoint $Protocol $normalized
-    if ($Protocol -ne 'Ollama' -and -not $Secret) { throw '获取模型列表需要 API Key。' }
+    if (-not $Secret -and -not $normalized.IsLoopback) { throw '获取模型列表需要 API Key。' }
 
     $client = New-AIHttpClient ([uri]$listEndpoint)
     $timeoutSource = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds([int]$script:Config.execution.requestTimeoutSeconds))
@@ -239,22 +232,13 @@ function Get-AIRemoteModels {
         try { $payload = $body | ConvertFrom-Json -ErrorAction Stop }
         catch { throw "模型列表响应不是有效 JSON：$safeBody" }
 
-        $entries = if ($Protocol -in @('Anthropic','OpenAIChat','OpenAIResponses')) {
-            @(Get-AIProperty $payload 'data')
-        } else { @(Get-AIProperty $payload 'models') }
+        $entries = @(Get-AIProperty $payload 'data')
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         $result = [Collections.Generic.List[object]]::new()
         foreach ($entry in $entries) {
             if ($null -eq $entry) { continue }
-            if ($Protocol -eq 'GeminiNative') {
-                $methods = @(Get-AIProperty $entry 'supportedGenerationMethods')
-                if ($methods.Count -eq 0) { $methods = @(Get-AIProperty $entry 'supportedActions') }
-                if ($methods -notcontains 'generateContent') { continue }
-                $id = ([string](Get-AIProperty $entry 'name')) -replace '^models/', ''
-            } elseif ($Protocol -eq 'Ollama') {
-                $id = [string](Get-AIProperty $entry 'name')
-                if (-not $id) { $id = [string](Get-AIProperty $entry 'model') }
-            } else { $id = [string](Get-AIProperty $entry 'id') }
+            # Gemini 兼容接口返回 models/ 前缀，请求时不需要。
+            $id = ([string](Get-AIProperty $entry 'id')) -replace '^models/', ''
             if ([string]::IsNullOrWhiteSpace($id) -or $id.Length -gt 512 -or
                 $id -match '[\x00-\x1F\x7F-\x9F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]' -or
                 -not $seen.Add($id)) { continue }

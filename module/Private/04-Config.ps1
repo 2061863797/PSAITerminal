@@ -57,7 +57,7 @@ function Get-AIDataDirectory {
 
 function New-AIDefaultConfig {
     [ordered]@{
-        schemaVersion = 2
+        schemaVersion = 3
         revision = 0L
         shortcutPresetVersion = 4
         language = 'en-US'
@@ -217,7 +217,7 @@ function ConvertTo-AIEndpoint([string]$Protocol, [uri]$Endpoint) {
 }
 
 function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
-    Assert-AIIntegerValue $Candidate.schemaVersion 2 2 '配置版本'
+    Assert-AIIntegerValue $Candidate.schemaVersion 3 3 '配置版本'
     [void](Get-AIRevision $Candidate '配置')
     Assert-AIIntegerValue $Candidate.shortcutPresetVersion 4 4 '快捷键预设版本'
     if ([string]$Candidate.language -notin @('en-US','zh-CN')) { throw '配置中的 language 必须是 en-US 或 zh-CN。' }
@@ -301,13 +301,34 @@ function Merge-AIConfig([Collections.IDictionary]$Loaded) {
             if (Test-AIMapContains $Loaded[$section] $key) { $candidate[$section][$key] = $Loaded[$section][$key] }
         }
     }
-    $candidate.schemaVersion = 2
+    $candidate.schemaVersion = 3
     $candidate.shortcutPresetVersion = 4
     foreach ($model in @($candidate.models.Values)) {
+        if ($model -isnot [Collections.IDictionary]) { continue }
         if ($model.capabilities -is [Collections.IDictionary]) { $model.capabilities = ConvertTo-AICapabilities $model.capabilities }
+        if (Update-AILegacyModel $model) { $script:ConfigMigrated = $true }
     }
     Assert-AIConfigCandidate $candidate
     $candidate
+}
+
+# 1.0.x 的 OpenAIResponses、GeminiNative、Ollama 模型迁移到 OpenAI 兼容接口。
+function Update-AILegacyModel([Collections.IDictionary]$Model) {
+    $protocol = [string]$Model.protocol
+    if ($protocol -notin @('OpenAIResponses','GeminiNative','Ollama')) { return $false }
+    $uri = [uri][string]$Model.endpoint
+    $base = $uri.GetLeftPart([UriPartial]::Authority) + $uri.AbsolutePath.TrimEnd('/')
+    if ($protocol -eq 'GeminiNative') {
+        if ($base -notmatch '/v\d+[a-z0-9]*$') { $base += '/v1beta' }
+        $Model.endpoint = "$base/openai"
+        $Model.modelId = ([string]$Model.modelId) -replace '^models/', ''
+    } elseif ($protocol -eq 'Ollama') {
+        $Model.endpoint = $base -replace '/api$', ''
+    }
+    if ($protocol -ne 'OpenAIResponses') { $Model.parameters = [ordered]@{} }
+    $Model.protocol = 'OpenAIChat'
+    Write-Warning "PSAITerminal 已把模型 '$($Model.name)' 从 $protocol 迁移到 OpenAI 兼容接口：$($Model.endpoint)"
+    $true
 }
 
 function Initialize-AIState {
@@ -339,9 +360,9 @@ function Initialize-AIState {
         Write-Warning "PSAITerminal 配置无法读取，已进入 Off 模式。原文件未覆盖。$($_.Exception.Message)"
         return
     }
-    if ($script:ShortcutMigrated) {
+    if ($script:ShortcutMigrated -or $script:ConfigMigrated) {
         try { Save-AIConfig }
-        catch { Write-Warning "快捷键配置已在当前会话迁移，但暂时无法写入磁盘；下次启动会重试：$($_.Exception.Message)" }
+        catch { Write-Warning "配置已在当前会话迁移，但暂时无法写入磁盘；下次启动会重试：$($_.Exception.Message)" }
     }
     $script:SecretMaskingCacheInitialized = $false
 }

@@ -170,3 +170,16 @@ function Get-PSAISourceFunctionText([Parameter(Mandatory)][string]$Name) {
     }
     throw "模块源码中找不到函数：$Name"
 }
+
+# 生成 OpenAI 兼容的流式响应，供模拟服务返回文本或一次 powershell 工具调用。
+function ConvertTo-AIMockSse([string]$Text, $ToolArguments, [string]$ToolCallId = 'call-1') {
+    $delta = [ordered]@{}
+    if ($Text) { $delta.content = $Text }
+    if ($null -ne $ToolArguments) {
+        $arguments = if ($ToolArguments -is [string]) { $ToolArguments } else { $ToolArguments | ConvertTo-Json -Depth 20 -Compress }
+        $delta.tool_calls = @(@{index=0;id=$ToolCallId;function=@{name='powershell';arguments=$arguments}})
+    }
+    $finish = if ($null -ne $ToolArguments) { 'tool_calls' } else { 'stop' }
+    $chunk = @{choices=@(@{delta=$delta;finish_reason=$finish})} | ConvertTo-Json -Depth 20 -Compress
+    "data: $chunk`r`n`r`ndata: [DONE]`r`n`r`n"
+}

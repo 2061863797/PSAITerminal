@@ -2,11 +2,13 @@
 # 由 tests/run.ps1 在同一作用域内按文件名顺序点源执行，依赖其中的 $module、$testRoot 等状态，不能单独运行。
 
 # 模型 CRUD、SessionOnly 回滚和持久化。
-New-PSAIModel -Name local -Protocol Ollama -Endpoint http://127.0.0.1:11434 -ModelId qwen3 | Out-Null
+New-PSAIModel -Name local -Protocol OpenAIChat -Endpoint http://127.0.0.1:11434 -ModelId qwen3 | Out-Null
+Assert-Equal $false (Get-PSAIModel -Name local).HasSecret '本机接口可以不配置 API Key。'
+Assert-Throws { New-PSAIModel -Name remote -Protocol OpenAIChat -Endpoint https://api.example.com -ModelId m } '必须提供 API Key' '远程接口必须提供 API Key。'
 Assert-Equal 1 @((Get-PSAIModel)).Count '新增模型后应立即可见。'
 Assert-Equal 'local' (Get-PSAIModel -Name local).Name '新增模型名称不一致。'
 Assert-Throws { Get-PSAIModel -Name missing } '模型不存在' '查询不存在模型必须明确报错。'
-Assert-Throws { Set-PSAIModel -Name local -Protocol OpenAIChat } '必须同时提供新的接口地址' '协议切换不应复用旧地址。'
+Assert-Throws { Set-PSAIModel -Name local -Protocol Anthropic } '必须同时提供新的接口地址' '协议切换不应复用旧地址。'
 
 Assert-Throws { & $module {
     $candidate=Copy-AIConfig;$candidate.shortcuts.forceShell=$candidate.shortcuts.forceAI;Assert-AIConfigCandidate $candidate
@@ -57,13 +59,13 @@ Assert-Throws { Set-PSAIModel -Name $secureModelName -ModelId changed } 'already
 & $module { param($path) $script:ConfigPath=$path } $originalConfigPath
 Assert-Equal $true (& $module { param($name) $script:SessionSecrets.ContainsKey($name) } $secureModelName) '回滚后密钥仍应是仅当前会话。'
 Assert-Equal $null ([PSAITerminal.PlatformCredentialStore]::Get("PSAITerminal/Model/$secureModelName")) 'SessionOnly 密钥不能被回滚写入系统密钥库。'
-Set-PSAIModel -Name $secureModelName -Protocol Ollama -Endpoint http://127.0.0.1:11434 | Out-Null
-Assert-Equal $false (& $module { param($name) $script:SessionSecrets.ContainsKey($name) } $secureModelName) '切换到 Ollama 必须删除旧协议密钥。'
-$ollamaRequest = [Net.Http.HttpRequestMessage]::new()
+Set-PSAIModel -Name $secureModelName -Protocol Anthropic -Endpoint http://127.0.0.1:11434 | Out-Null
+Assert-Equal $false (& $module { param($name) $script:SessionSecrets.ContainsKey($name) } $secureModelName) '切换协议且未提供新密钥时必须删除旧协议密钥。'
+$localRequest = [Net.Http.HttpRequestMessage]::new()
 try {
-    & $module { param($request) Add-AIAuthenticationHeaders $request 'Ollama' 'must-not-send' } $ollamaRequest
-    Assert-Equal $null $ollamaRequest.Headers.Authorization 'Ollama 请求不能携带旧 Bearer 密钥。'
-} finally { $ollamaRequest.Dispose() }
+    & $module { param($request) Add-AIAuthenticationHeaders $request 'OpenAIChat' $null } $localRequest
+    Assert-Equal $null $localRequest.Headers.Authorization '没有密钥时不能发送 Authorization 头。'
+} finally { $localRequest.Dispose() }
 Remove-PSAIModel -Name $secureModelName -Confirm:$false
 
 $firstSessionId = (Get-PSAISession | Where-Object Active).Id

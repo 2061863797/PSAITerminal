@@ -65,7 +65,7 @@ function Test-PSAIConfiguration {
     if ($script:Config.activeModel -and (Test-AIMapContains $script:Config.models ([string]$script:Config.activeModel))) {
         $activeModel = $script:Config.models[[string]$script:Config.activeModel]
         & $add '当前模型' $true "$(($activeModel.name)) / $($activeModel.modelId)" ''
-        $hasCredential = $activeModel.protocol -eq 'Ollama' -or [bool](Get-AISecret ([string]$activeModel.name))
+        $hasCredential = (Test-AIApiKeyOptional ([string]$activeModel.endpoint)) -or [bool](Get-AISecret ([string]$activeModel.name))
         & $add '模型凭据' $hasCredential $(if($hasCredential){'可用'}else{'缺少 API Key'}) $(if($hasCredential){''}else{'编辑当前模型并更新 API Key'})
         try {
             [void](ConvertTo-AIEndpoint ([string]$activeModel.protocol) ([uri][string]$activeModel.endpoint))

@@ -31,9 +31,6 @@ public enum AIProtocol
 {
     Anthropic,
     OpenAIChat,
-    OpenAIResponses,
-    GeminiNative,
-    Ollama,
 }
 
 /// <summary>
@@ -308,52 +305,17 @@ public static class AITerminalEndpointResolver
         return builder.Uri;
     }
 
-    public static Uri ResolveModelListEndpoint(string protocol, Uri endpoint)
+    public static Uri ResolveModelListEndpoint(string protocol, Uri endpoint) =>
+        ResolveResource(protocol, endpoint, "models");
+
+    public static Uri ResolveRequestEndpoint(string protocol, Uri endpoint) =>
+        ResolveResource(protocol, endpoint, ParseProtocol(protocol) == AIProtocol.Anthropic ? "messages" : "chat/completions");
+
+    private static Uri ResolveResource(string protocol, Uri endpoint, string resource)
     {
-        AIProtocol parsedProtocol = ParseProtocol(protocol);
         Uri normalized = NormalizeBaseEndpoint(protocol, endpoint);
         UriBuilder builder = new(normalized);
-        string path = builder.Path.TrimEnd('/');
-
-        builder.Path = parsedProtocol switch
-        {
-            AIProtocol.OpenAIChat or AIProtocol.OpenAIResponses or AIProtocol.Anthropic =>
-                AppendPath(EnsureVersionSuffix(path, "v1"), "models"),
-            AIProtocol.GeminiNative => AppendPath(EnsureVersionSuffix(path, "v1beta"), "models"),
-            AIProtocol.Ollama => AppendPath(EnsureVersionSuffix(path, "api"), "tags"),
-            _ => throw new ArgumentOutOfRangeException(nameof(protocol)),
-        };
-
-        if (parsedProtocol == AIProtocol.GeminiNative)
-        {
-            builder.Query = "pageSize=1000";
-        }
-
-        return builder.Uri;
-    }
-
-    public static Uri ResolveRequestEndpoint(string protocol, Uri endpoint, string? modelId = null)
-    {
-        AIProtocol parsedProtocol = ParseProtocol(protocol);
-        Uri normalized = NormalizeBaseEndpoint(protocol, endpoint);
-        UriBuilder builder = new(normalized);
-        string path = builder.Path.TrimEnd('/');
-
-        builder.Path = parsedProtocol switch
-        {
-            AIProtocol.OpenAIChat => AppendPath(EnsureVersionSuffix(path, "v1"), "chat/completions"),
-            AIProtocol.OpenAIResponses => AppendPath(EnsureVersionSuffix(path, "v1"), "responses"),
-            AIProtocol.Anthropic => AppendPath(EnsureVersionSuffix(path, "v1"), "messages"),
-            AIProtocol.Ollama => AppendPath(EnsureVersionSuffix(path, "api"), "chat"),
-            AIProtocol.GeminiNative => ResolveGeminiPath(path, modelId),
-            _ => throw new ArgumentOutOfRangeException(nameof(protocol)),
-        };
-
-        if (parsedProtocol == AIProtocol.GeminiNative)
-        {
-            builder.Query = "alt=sse";
-        }
-
+        builder.Path = AppendPath(EnsureVersionSegment(builder.Path.TrimEnd('/')), resource);
         return builder.Uri;
     }
 
@@ -387,30 +349,16 @@ public static class AITerminalEndpointResolver
     private static bool IsResourcePath(AIProtocol protocol, string path)
     {
         string normalized = path.TrimEnd('/');
-        return protocol switch
-        {
-            AIProtocol.OpenAIChat => normalized.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase) ||
-                normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
-            AIProtocol.OpenAIResponses => normalized.EndsWith("/responses", StringComparison.OrdinalIgnoreCase) ||
-                normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
-            AIProtocol.Anthropic => normalized.EndsWith("/messages", StringComparison.OrdinalIgnoreCase) ||
-                normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
-            AIProtocol.GeminiNative => normalized.IndexOf(":streamGenerateContent", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase),
-            AIProtocol.Ollama => normalized.EndsWith("/api/chat", StringComparison.OrdinalIgnoreCase) ||
-                normalized.EndsWith("/api/tags", StringComparison.OrdinalIgnoreCase),
-            _ => false,
-        };
+        string resource = protocol == AIProtocol.Anthropic ? "/messages" : "/chat/completions";
+        return normalized.EndsWith(resource, StringComparison.OrdinalIgnoreCase) ||
+            normalized.EndsWith("/models", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string EnsureVersionSuffix(string path, string versionSegment)
-    {
-        string normalized = path.TrimEnd('/');
-        string suffix = "/" + versionSegment;
-        return normalized.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
-            ? normalized
-            : AppendPath(normalized, versionSegment);
-    }
+    // 基础地址已包含版本段（/v1、/v1beta/openai、/api/v3 等）时原样使用，否则补 /v1。
+    private static string EnsureVersionSegment(string path) =>
+        Regex.IsMatch(path, @"(?:^|/)v\d+[a-z0-9]*(?:/|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            ? path
+            : AppendPath(path, "v1");
 
     private static string AppendPath(string path, string suffix)
     {
@@ -419,24 +367,6 @@ public static class AITerminalEndpointResolver
         return string.IsNullOrEmpty(left) ? "/" + right : left + "/" + right;
     }
 
-    private static string ResolveGeminiPath(string path, string? modelId)
-    {
-        if (string.IsNullOrWhiteSpace(modelId))
-        {
-            throw new ArgumentException("Gemini Native 请求必须提供模型 ID。", nameof(modelId));
-        }
-
-        string nonEmptyModelId = modelId!;
-        string normalizedModel = nonEmptyModelId.StartsWith("models/", StringComparison.OrdinalIgnoreCase)
-            ? nonEmptyModelId.Substring(7)
-            : nonEmptyModelId;
-        if (!Regex.IsMatch(normalizedModel, "^[A-Za-z0-9._-]+$", RegexOptions.CultureInvariant))
-        {
-            throw new ArgumentException("Gemini Native 模型 ID 无效。", nameof(modelId));
-        }
-
-        return AppendPath(EnsureVersionSuffix(path, "v1beta"), $"models/{normalizedModel}:streamGenerateContent");
-    }
 }
 
 public static class AITerminalSecurity
