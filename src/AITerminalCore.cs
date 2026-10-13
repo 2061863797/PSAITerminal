@@ -444,70 +444,115 @@ public static class AITerminalSecurity
     private static readonly Dictionary<string, string> s_standardCommandAliases = new(StringComparer.OrdinalIgnoreCase)
     {
         ["ac"] = "Add-Content",
+        ["cat"] = "Get-Content",
+        ["cd"] = "Set-Location",
+        ["chdir"] = "Set-Location",
         ["clc"] = "Clear-Content",
         ["cli"] = "Clear-Item",
         ["clp"] = "Clear-ItemProperty",
-        ["cp"] = "Copy-Item",
+        ["cls"] = "Clear-Host",
         ["copy"] = "Copy-Item",
+        ["cp"] = "Copy-Item",
         ["cpi"] = "Copy-Item",
-        ["cpp"] = "Copy-ItemProperty",
+        ["dir"] = "Get-ChildItem",
+        ["echo"] = "Write-Output",
         ["epcsv"] = "Export-Csv",
+        ["fl"] = "Format-List",
+        ["foreach"] = "ForEach-Object",
+        ["ft"] = "Format-Table",
+        ["gc"] = "Get-Content",
+        ["gci"] = "Get-ChildItem",
+        ["gl"] = "Get-Location",
+        ["gm"] = "Get-Member",
+        ["gps"] = "Get-Process",
+        ["group"] = "Group-Object",
+        ["gsv"] = "Get-Service",
+        ["iex"] = "Invoke-Expression",
+        ["irm"] = "Invoke-RestMethod",
+        ["iwr"] = "Invoke-WebRequest",
+        ["kill"] = "Stop-Process",
+        ["ls"] = "Get-ChildItem",
+        ["measure"] = "Measure-Object",
         ["mi"] = "Move-Item",
+        ["mkdir"] = "New-Item",
         ["move"] = "Move-Item",
         ["mv"] = "Move-Item",
-        ["mp"] = "Move-ItemProperty",
-        ["mkdir"] = "New-Item",
-        ["nal"] = "New-Alias",
-        ["ndr"] = "New-PSDrive",
         ["ni"] = "New-Item",
+        ["popd"] = "Pop-Location",
+        ["ps"] = "Get-Process",
+        ["pushd"] = "Push-Location",
+        ["pwd"] = "Get-Location",
+        ["rd"] = "Remove-Item",
+        ["del"] = "Remove-Item",
+        ["erase"] = "Remove-Item",
         ["ren"] = "Rename-Item",
+        ["ri"] = "Remove-Item",
+        ["rm"] = "Remove-Item",
+        ["rmdir"] = "Remove-Item",
         ["rni"] = "Rename-Item",
-        ["sal"] = "Set-Alias",
+        ["sajb"] = "Start-Job",
+        ["saps"] = "Start-Process",
         ["sc"] = "Set-Content",
+        ["select"] = "Select-Object",
         ["set"] = "Set-Variable",
         ["si"] = "Set-Item",
+        ["sl"] = "Set-Location",
+        ["sort"] = "Sort-Object",
         ["sp"] = "Set-ItemProperty",
+        ["spps"] = "Stop-Process",
+        ["spsv"] = "Stop-Service",
+        ["start"] = "Start-Process",
         ["sv"] = "Set-Variable",
         ["tee"] = "Tee-Object",
-        ["dir"] = "Get-ChildItem",
-        ["ls"] = "Get-ChildItem",
-        ["gci"] = "Get-ChildItem",
-        ["cat"] = "Get-Content",
-        ["gc"] = "Get-Content",
         ["type"] = "Get-Content",
-        ["select"] = "Select-Object",
         ["where"] = "Where-Object",
-        ["sort"] = "Sort-Object",
-        ["measure"] = "Measure-Object",
+        ["%"] = "ForEach-Object",
+        ["?"] = "Where-Object",
+    };
+
+    // 不可逆、提权或执行任意代码的命令：总是需要人工确认，不能被自动允许。
+    private static readonly string[] s_highRiskPrefixes =
+    {
+        "Remove-", "Clear-", "Stop-", "Restart-", "Uninstall-", "Disable-", "Reset-", "Dismount-", "Unregister-",
     };
 
     private static readonly HashSet<string> s_highRiskCommandNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Clear-Content", "Clear-Disk", "Format-Volume", "Install-Module", "Install-Package",
-        "Install-Script", "Out-File", "Restart-Computer", "Restart-Service", "Set-Acl",
-        "Set-Content", "Set-ExecutionPolicy", "Stop-Computer", "Stop-Process", "Stop-Service",
-        "Uninstall-Module", "Uninstall-Package", "Uninstall-Script", "Update-Module",
-        "Update-Package", "Update-Script", "Invoke-Expression", "Start-Process", "bash",
-        "bash.exe", "cmd", "cmd.exe", "cscript", "cscript.exe", "del", "erase", "iex",
-        "node", "node.exe", "powershell", "powershell.exe", "python", "python.exe", "python3",
-        "python3.exe", "pwsh", "pwsh.exe", "kill", "rd", "ri", "rmdir", "rm", "saps",
-        "sc", "spps", "spsv", "start", "wscript", "wscript.exe", "wsl", "wsl.exe",
+        "Format-Volume", "Initialize-Disk", "Invoke-Expression", "Set-ExecutionPolicy", "Set-Acl",
+        "Invoke-Command", "Enter-PSSession", "Add-LocalGroupMember", "Set-LocalUser", "Set-Service",
+        "bash", "bcdedit", "cipher", "cmd", "cscript", "diskpart", "format", "icacls", "mshta", "powershell",
+        "pwsh", "regsvr32", "rundll32", "runas", "shutdown", "sudo", "takeown", "taskkill", "vssadmin", "wmic",
+        "wscript", "wsl",
+    };
+
+    // 不改变系统状态的查询与展示命令。
+    private static readonly string[] s_lowRiskPrefixes =
+    {
+        "Get-", "Test-", "Measure-", "Select-", "Where-", "Sort-", "Format-", "Group-", "Compare-", "Resolve-",
+        "ConvertTo-", "ConvertFrom-", "Find-",
     };
 
     private static readonly HashSet<string> s_lowRiskCommandNames = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Out-Host", "Out-Null", "Out-String", "Write-Debug", "Write-Error", "Write-Host",
-        "Write-Information", "Write-Output", "Write-Progress", "Write-Verbose", "Write-Warning",
+        "ForEach-Object", "Out-Host", "Out-Null", "Out-String", "Write-Debug", "Write-Error", "Write-Host",
+        "Write-Information", "Write-Output", "Write-Progress", "Write-Verbose", "Write-Warning", "Clear-Host",
+        "Set-Location", "Push-Location", "Pop-Location",
+        "hostname", "ipconfig", "netstat", "nslookup", "ping", "systeminfo", "tasklist", "tracert", "whoami",
+        "where", "ver",
     };
 
-    private static readonly HashSet<string> s_mediumRiskCommandNames = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Pop-Location", "Push-Location", "Set-Location",
-    };
-
-    private static readonly Regex s_highRiskNativeCommand = new(
-        @"^\s*(?:(?:sudo|chmod|chown|taskkill|shutdown|diskpart|bcdedit|takeown|icacls|msiexec(?:\.exe)?)\b|reg(?:\.exe)?\s+(?:add|delete|import|restore|load|unload)\b|sc(?:\.exe)?\s+(?:config|delete|stop)\b|(?:winget|choco)\s+(?:install|uninstall|upgrade)\b)",
+    private static readonly Regex s_highRiskNativeArguments = new(
+        @"^\s*(?:reg\s+(?:add|delete|import|restore|load|unload)\b|sc\s+(?:config|delete|stop)\b|(?:winget|choco)\s+(?:install|uninstall|upgrade)\b|git\s+(?:clean\b|reset\s+.*--hard\b|push\s+.*(?:--force\b|-f\b)|branch\s+.*-D\b))",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex s_lowRiskGit = new(
+        @"^\s*git\s+(?:status|log|diff|show|branch)(?:\s+(?!.*(?:-d\b|-D\b|-m\b|-M\b|--delete\b|--move\b)).*)?$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly HashSet<string> s_destructiveMemberNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Delete", "Kill", "Format", "Shutdown", "DeleteSubKey", "DeleteSubKeyTree", "DeleteValue",
+    };
 
     private const string SecretNamePattern =
         "(?:api[-_]?key|subscription[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|session[-_]?token|token|password|passwd|pwd|client[-_]?secret|secret|private[-_]?key|connection[-_]?string|credential|access[-_]?key[-_]?id|secret[-_]?access[-_]?key|x[-_]amz[-_]?(?:signature|credential|security[-_]?token)|x[-_]goog[-_]?(?:signature|credential)|account[-_]?key|sas[-_]?token|signature|sig)";
@@ -532,94 +577,98 @@ public static class AITerminalSecurity
         @"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])",
         RegexOptions.CultureInvariant);
 
-    public static AITerminalRisk ClassifyRisk(string toolName, string? command)
+    /// <summary>
+    /// 只按命令文本静态分级；当前会话中的别名与函数重绑定由模块侧解析后再次调用本方法。
+    /// </summary>
+    public static AITerminalRisk ClassifyRisk(string? command)
     {
-        if (!string.Equals(toolName, "powershell", StringComparison.OrdinalIgnoreCase))
-        {
-            return toolName switch
-            {
-                "read_file" or "list_directory" or "system_info" => AITerminalRisk.Low,
-                "copy_file" or "download_http" or "upload_http" or "upload_s3" => AITerminalRisk.High,
-                _ => AITerminalRisk.Medium,
-            };
-        }
-
         command ??= string.Empty;
         ScriptBlockAst ast = Parser.ParseInput(command, out _, out ParseError[] parseErrors);
         if (parseErrors.Length > 0 ||
-            ast.Find(static node => node is RedirectionAst or ExitStatementAst or InvokeMemberExpressionAst or
-                FunctionDefinitionAst or TypeDefinitionAst or AssignmentStatementAst, true) is not null)
+            ast.Find(static node => node is ExitStatementAst, true) is not null ||
+            ast.Find(static node => node is InvokeMemberExpressionAst member &&
+                member.Member is StringConstantExpressionAst name &&
+                s_destructiveMemberNames.Contains(name.Value), true) is not null)
         {
             return AITerminalRisk.High;
         }
 
-        bool mediumRisk = false;
+        AITerminalRisk risk = AITerminalRisk.Low;
+        if (ast.Find(static node =>
+                node is FileRedirectionAst or AssignmentStatementAst or InvokeMemberExpressionAst or
+                FunctionDefinitionAst or TypeDefinitionAst, true) is not null)
+        {
+            risk = AITerminalRisk.Medium;
+        }
+
         foreach (CommandAst commandAst in ast.FindAll(static node => node is CommandAst, true).Cast<CommandAst>())
         {
-            string? commandName = commandAst.GetCommandName();
-            if (string.IsNullOrEmpty(commandName))
+            AITerminalRisk commandRisk = ClassifyCommand(commandAst);
+            if (commandRisk > risk)
             {
-                return AITerminalRisk.High;
+                risk = commandRisk;
             }
 
-            if (s_standardCommandAliases.TryGetValue(commandName, out string? resolvedName))
+            if (risk == AITerminalRisk.High)
             {
-                commandName = resolvedName;
-            }
-
-            bool forceOverwrite =
-                (commandName.Equals("Copy-Item", StringComparison.OrdinalIgnoreCase) ||
-                 commandName.Equals("Move-Item", StringComparison.OrdinalIgnoreCase)) &&
-                commandAst.CommandElements.Any(static element =>
-                    element.Extent.Text.Equals("-Force", StringComparison.OrdinalIgnoreCase));
-
-            if (s_mediumRiskCommandNames.Contains(commandName))
-            {
-                mediumRisk = true;
-                continue;
-            }
-
-            if (s_highRiskCommandNames.Contains(commandName) ||
-                commandName.StartsWith("Remove-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Clear-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Disable-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Uninstall-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Install-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Invoke-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Set-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("New-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Add-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Update-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Move-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Copy-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Rename-", StringComparison.OrdinalIgnoreCase) ||
-                (commandName.StartsWith("Write-", StringComparison.OrdinalIgnoreCase) &&
-                 !s_lowRiskCommandNames.Contains(commandName)) ||
-                commandName.Equals("Copy-Item", StringComparison.OrdinalIgnoreCase) ||
-                commandName.Equals("Move-Item", StringComparison.OrdinalIgnoreCase) ||
-                commandName.Equals("Export-Csv", StringComparison.OrdinalIgnoreCase) ||
-                commandName.Equals("Tee-Object", StringComparison.OrdinalIgnoreCase) ||
-                s_highRiskNativeCommand.IsMatch(commandAst.Extent.Text) ||
-                forceOverwrite)
-            {
-                return AITerminalRisk.High;
-            }
-
-            bool knownReadOnlyCommand = s_lowRiskCommandNames.Contains(commandName) ||
-                commandName.StartsWith("Get-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Test-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Measure-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Select-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Where-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Sort-", StringComparison.OrdinalIgnoreCase) ||
-                commandName.StartsWith("Format-", StringComparison.OrdinalIgnoreCase);
-            if (!knownReadOnlyCommand)
-            {
-                return AITerminalRisk.High;
+                return risk;
             }
         }
 
-        return mediumRisk ? AITerminalRisk.Medium : AITerminalRisk.Low;
+        return risk;
+    }
+
+    private static AITerminalRisk ClassifyCommand(CommandAst commandAst)
+    {
+        string? rawName = commandAst.GetCommandName();
+        if (string.IsNullOrEmpty(rawName))
+        {
+            // & $value、. (expression) 等动态调用无法静态确认目标。
+            return AITerminalRisk.High;
+        }
+
+        string name = rawName!;
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            name = name.Substring(0, name.Length - 4);
+        }
+
+        if (s_standardCommandAliases.TryGetValue(name, out string? resolvedName))
+        {
+            name = resolvedName;
+        }
+
+        string text = commandAst.Extent.Text;
+        bool hasForce = commandAst.CommandElements.Any(static element =>
+            element is CommandParameterAst parameter &&
+            parameter.ParameterName.Equals("Force", StringComparison.OrdinalIgnoreCase));
+        bool runAs = commandAst.CommandElements.Any(static element =>
+            element.Extent.Text.Equals("RunAs", StringComparison.OrdinalIgnoreCase) ||
+            element.Extent.Text.Equals("'RunAs'", StringComparison.OrdinalIgnoreCase) ||
+            element.Extent.Text.Equals("\"RunAs\"", StringComparison.OrdinalIgnoreCase));
+
+        if (s_highRiskCommandNames.Contains(name) ||
+            s_highRiskNativeArguments.IsMatch(text) ||
+            (hasForce && (name.Equals("Copy-Item", StringComparison.OrdinalIgnoreCase) ||
+                name.Equals("Move-Item", StringComparison.OrdinalIgnoreCase))) ||
+            (runAs && name.Equals("Start-Process", StringComparison.OrdinalIgnoreCase)))
+        {
+            return AITerminalRisk.High;
+        }
+
+        if (s_lowRiskCommandNames.Contains(name) || s_lowRiskGit.IsMatch(text))
+        {
+            return AITerminalRisk.Low;
+        }
+
+        if (s_highRiskPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+        {
+            return AITerminalRisk.High;
+        }
+
+        return s_lowRiskPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            ? AITerminalRisk.Low
+            : AITerminalRisk.Medium;
     }
 
     public static string? ProtectText(string? text, IEnumerable<string>? secrets, int maximumCharacters)

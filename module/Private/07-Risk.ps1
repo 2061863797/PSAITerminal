@@ -1,56 +1,62 @@
 ﻿# 命令 AST 安全分析、风险分级与审批摘要。
 
+# 命令名的静态规则在 C# 中；这里按当前会话解析别名和函数，防止重绑定绕过分级。
 function Get-AICommandRisk([string]$Command) {
-    $risk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell', $Command)
+    $risk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk($Command)
     if ($risk -eq [PSAITerminal.AITerminalRisk]::High) { return $risk }
 
     $tokens = $null
     $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseInput($Command, [ref]$tokens, [ref]$parseErrors)
-    if (@($parseErrors).Count -gt 0) { return [PSAITerminal.AITerminalRisk]::High }
-
     foreach ($commandAst in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)) {
         $name = $commandAst.GetCommandName()
-        if (-not $name) { return [PSAITerminal.AITerminalRisk]::High }
+        if (-not $name) { continue }
+        $resolvedName = $name
         $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        $resolved = $false
-        for ($depth = 0; $depth -lt 8 -and $seen.Add($name); $depth++) {
-            # 模块会保留导入时的标准别名；顶层执行以宿主的当前重绑定为准。
-            $commandInfo = Get-Alias -Name ([WildcardPattern]::Escape($name)) -Scope Global -ErrorAction SilentlyContinue |
+        $commandInfo = $null
+        while ($seen.Add($resolvedName) -and $seen.Count -le 8) {
+            $commandInfo = Get-Alias -Name ([WildcardPattern]::Escape($resolvedName)) -Scope Global -ErrorAction SilentlyContinue |
                 Select-Object -First 1
             if (-not $commandInfo) {
-                $commandInfo = Get-Item -LiteralPath ("Function:\global:" + $name) -ErrorAction SilentlyContinue
+                $commandInfo = Get-Item -LiteralPath ("Function:\global:" + $resolvedName) -ErrorAction SilentlyContinue
             }
             if (-not $commandInfo) {
-                $commandInfo = Get-Command -Name ([WildcardPattern]::Escape($name)) -ErrorAction SilentlyContinue |
+                $commandInfo = Get-Command -Name ([WildcardPattern]::Escape($resolvedName)) -ErrorAction SilentlyContinue |
                     Select-Object -First 1
             }
-            if (-not $commandInfo) { return [PSAITerminal.AITerminalRisk]::High }
-            if ($commandInfo.CommandType -eq [Management.Automation.CommandTypes]::Alias) {
-                $resolvedName = if ($commandInfo.ResolvedCommand) {
-                    [string]$commandInfo.ResolvedCommand.Name
-                } else {
-                    [string]$commandInfo.Definition
-                }
-                if (-not $resolvedName) { return [PSAITerminal.AITerminalRisk]::High }
-                $resolvedRisk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell', "$resolvedName __PSAI_ARGUMENT__")
-                if ([int]$resolvedRisk -gt [int]$risk) { $risk = $resolvedRisk }
-                if ($risk -eq [PSAITerminal.AITerminalRisk]::High) { return $risk }
-                $name = $resolvedName
-                continue
-            }
-            $resolvedRisk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell', "$($commandInfo.Name) __PSAI_ARGUMENT__")
-            if ([int]$resolvedRisk -gt [int]$risk) { $risk = $resolvedRisk }
-            if ($risk -eq [PSAITerminal.AITerminalRisk]::High) { return $risk }
-            if ($commandInfo.CommandType -ne [Management.Automation.CommandTypes]::Cmdlet) {
-                return [PSAITerminal.AITerminalRisk]::High
-            }
-            $resolved = $true
-            break
+            if (-not $commandInfo -or $commandInfo.CommandType -ne [Management.Automation.CommandTypes]::Alias) { break }
+            $resolvedName = if ($commandInfo.ResolvedCommand) { [string]$commandInfo.ResolvedCommand.Name } else { [string]$commandInfo.Definition }
         }
-        if (-not $resolved) { return [PSAITerminal.AITerminalRisk]::High }
+        if (-not $commandInfo) { continue }
+
+        $commandRisk = [PSAITerminal.AITerminalRisk]::Low
+        if ($commandInfo.CommandType -in @([Management.Automation.CommandTypes]::Function, [Management.Automation.CommandTypes]::Filter)) {
+            $shadowsCmdlet = [bool](Get-Command -Name ([WildcardPattern]::Escape($resolvedName)) -CommandType Cmdlet -ErrorAction SilentlyContinue)
+            if ($shadowsCmdlet) { return [PSAITerminal.AITerminalRisk]::High }
+            # 只有随系统安装的模块函数（如 Get-NetIPAddress）按名称分级，会话自定义函数至少为中风险。
+            if (-not (Test-AISystemModule $commandInfo.Module)) { $commandRisk = [PSAITerminal.AITerminalRisk]::Medium }
+        } elseif ($commandInfo.CommandType -eq [Management.Automation.CommandTypes]::ExternalScript) {
+            $commandRisk = [PSAITerminal.AITerminalRisk]::Medium
+        }
+        if ($resolvedName -ne $name) {
+            $nameLength = $commandAst.CommandElements[0].Extent.Text.Length
+            $resolvedText = $resolvedName + $commandAst.Extent.Text.Substring($nameLength)
+            $aliasRisk = [PSAITerminal.AITerminalSecurity]::ClassifyRisk($resolvedText)
+            if ([int]$aliasRisk -gt [int]$commandRisk) { $commandRisk = $aliasRisk }
+        }
+        if ([int]$commandRisk -gt [int]$risk) { $risk = $commandRisk }
+        if ($risk -eq [PSAITerminal.AITerminalRisk]::High) { return $risk }
     }
     $risk
+}
+
+function Test-AISystemModule([AllowNull()][Management.Automation.PSModuleInfo]$Module) {
+    if (-not $Module -or -not $Module.ModuleBase) { return $false }
+    $base = [IO.Path]::GetFullPath($Module.ModuleBase).TrimEnd('\') + '\'
+    foreach ($root in @($PSHOME, (Join-Path $env:windir 'System32\WindowsPowerShell\v1.0'), (Join-Path $env:windir 'SysWOW64\WindowsPowerShell\v1.0'))) {
+        if ($root -and $base.StartsWith(([IO.Path]::GetFullPath($root).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    $false
 }
 
 function Get-AIApprovalDigest([string]$RunId, [string]$StepId, [string]$Command,

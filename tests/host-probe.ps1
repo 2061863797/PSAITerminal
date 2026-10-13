@@ -46,9 +46,9 @@ if ($PSVersionTable.PSEdition -eq 'Desktop') {
 }
 
 $risks = @(
-    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell','Get-ChildItem').ToString(),
-    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell','Set-Location C:\').ToString(),
-    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('powershell','Remove-Item C:\probe.txt').ToString()
+    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('Get-ChildItem').ToString(),
+    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('New-Item C:\probe.txt').ToString(),
+    [PSAITerminal.AITerminalSecurity]::ClassifyRisk('Remove-Item C:\probe.txt').ToString()
 )
 Assert-Probe (($risks -join ',') -eq 'Low,Medium,High') '低/中/高风险分类与安全约定不一致。'
 
