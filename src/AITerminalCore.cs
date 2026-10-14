@@ -13,13 +13,6 @@ internal static class AITerminalPlatform
     internal static bool IsWindows => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 }
 
-public enum AITerminalMode
-{
-    Off,
-    AI,
-    Auto,
-}
-
 public enum AITerminalRisk
 {
     Low,
@@ -155,8 +148,6 @@ public sealed class AITerminalStreamingTextSanitizer
 
         return result.ToString();
     }
-
-    public void Reset() => _state = ParserState.Text;
 
     private static bool IsUnsafeUnicodeControl(char value) =>
         (value is '\u061c' or '\u200e' or '\u200f') ||

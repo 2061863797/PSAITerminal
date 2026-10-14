@@ -211,7 +211,7 @@ function Write-AIStreamText([string]$Text, [switch]$First) {
     Write-AIColoredHost $Text DarkCyan -NoNewline
 }
 
-function Read-AIStreamPayloads([IO.StreamReader]$Reader, [string]$Protocol, [Threading.CancellationToken]$CancellationToken) {
+function Read-AIStreamPayloads([IO.StreamReader]$Reader, [Threading.CancellationToken]$CancellationToken) {
     $data = [Collections.Generic.List[string]]::new()
     $dataCharacters = 0
     while ($null -ne ($line = [PSAITerminal.AITerminalHttpContent]::ReadLine($Reader, $CancellationToken))) {
@@ -252,11 +252,8 @@ function Invoke-AIModelText {
     $endpoint = Resolve-AIRequestEndpoint $Model
     $secret = if ($PSBoundParameters.ContainsKey('SecretOverride')) { $SecretOverride } else { Get-AISecret ([string]$Model.name) }
     if (-not $secret -and -not (Test-AIApiKeyOptional ([string]$Model.endpoint))) { throw "模型 '$($Model.name)' 没有可用 API Key。" }
-    $json = if ($Messages -and $Messages.Count -gt 0) {
-        New-AIRequestBody $Model -Messages $Messages -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
-    } else {
-        New-AIRequestBody $Model -Prompt $Prompt -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
-    }
+    # New-AIRequestBody 在没有 Messages 时使用 Prompt。
+    $json = New-AIRequestBody $Model -Prompt $Prompt -Messages $Messages -EnableTools:$EnableTools | ConvertTo-Json -Depth 50 -Compress
     $client = New-AIHttpClient ([uri]$endpoint)
     $timeoutSource = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds([int]$script:Config.execution.requestTimeoutSeconds))
     $linkedSource = [Threading.CancellationTokenSource]::CreateLinkedTokenSource($CancellationToken, $timeoutSource.Token)
@@ -294,7 +291,6 @@ function Invoke-AIModelText {
     }
 
     $text = [Text.StringBuilder]::new()
-    $toolProposalText = if ($EnableTools) { [Text.StringBuilder]::new() } else { $null }
     $parsed = 0
     $responseState = [ordered]@{Terminal=$false;InputTokens=0L;OutputTokens=0L}
     $first = $true
@@ -304,7 +300,7 @@ function Invoke-AIModelText {
     try {
         $reader = [IO.StreamReader]::new(
             [PSAITerminal.AITerminalHttpContent]::ReadStream($response.Content, $requestToken))
-        Read-AIStreamPayloads $reader ([string]$Model.protocol) $requestToken | ForEach-Object {
+        Read-AIStreamPayloads $reader $requestToken | ForEach-Object {
             $payload = [string]$_
             if (-not $payload) { return }
             if ($payload -eq '[DONE]') { $responseState.Terminal = $true; return }
@@ -371,11 +367,6 @@ function Invoke-AIModelText {
                 }
             }
             if ($delta) {
-                # 工具正文按原文校验；显示清洗不能悄悄改变待执行命令。
-                if ($null -ne $toolProposalText) {
-                    if ($toolProposalText.Length + ([string]$delta).Length -gt 1MB) { throw '模型工具正文超过 1 MiB 上限。' }
-                    [void]$toolProposalText.Append([string]$delta)
-                }
                 $safeDelta = $sanitizer.Sanitize([string]$delta)
                 if ($text.Length + $safeDelta.Length -gt 1MB) { throw '模型文本响应超过 1 MiB 上限。' }
                 [void]$text.Append($safeDelta)
@@ -402,5 +393,5 @@ function Invoke-AIModelText {
         }
     }
     if ($text.Length -eq 0 -and $toolCalls.Count -eq 0) { throw '模型没有返回文本或工具调用。' }
-    [pscustomobject]@{Text=$text.ToString();ToolProposalText=$(if($null -ne $toolProposalText){$toolProposalText.ToString()}else{$null});ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
+    [pscustomobject]@{Text=$text.ToString();ToolCalls=@($toolCalls.Values);InputTokens=[long]$responseState.InputTokens;OutputTokens=[long]$responseState.OutputTokens}
 }

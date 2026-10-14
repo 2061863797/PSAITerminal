@@ -36,8 +36,8 @@ $sanitizer = [PSAITerminal.AITerminalStreamingTextSanitizer]::new()
 $escapeCharacter = [char]27
 $clean = $sanitizer.Sanitize("ok$($escapeCharacter)]0;bad") + $sanitizer.Sanitize("title`aEND")
 Assert-Equal 'okEND' $clean '跨分片 OSC 控制序列必须被清理。'
-$sanitizer.Reset(); Assert-Equal 'AB' ($sanitizer.Sanitize("A$([char]0x9b)31mB")) 'C1 CSI 不能残留参数文本。'
-$sanitizer.Reset(); $charsetClean=$sanitizer.Sanitize("A$($escapeCharacter)(")+$sanitizer.Sanitize('BB'); Assert-Equal 'AB' $charsetClean '跨分片 ESC 中间序列必须整体移除。'
+$sanitizer=[PSAITerminal.AITerminalStreamingTextSanitizer]::new(); Assert-Equal 'AB' ($sanitizer.Sanitize("A$([char]0x9b)31mB")) 'C1 CSI 不能残留参数文本。'
+$sanitizer=[PSAITerminal.AITerminalStreamingTextSanitizer]::new(); $charsetClean=$sanitizer.Sanitize("A$($escapeCharacter)(")+$sanitizer.Sanitize('BB'); Assert-Equal 'AB' $charsetClean '跨分片 ESC 中间序列必须整体移除。'
 $env:NO_COLOR='1'; try { Assert-Equal $false (& $module { Test-AIColorEnabled }) 'NO_COLOR 必须关闭模块颜色。' } finally { Remove-Item Env:NO_COLOR }
 $protected = [PSAITerminal.AITerminalSecurity]::ProtectText("Authorization: Bearer secret$($escapeCharacter)[31m",[string[]]@('secret'),65536)
 Assert-True ($protected -notmatch 'secret|\x1b') '保存前必须脱敏并移除 ANSI。'

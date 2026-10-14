@@ -25,7 +25,6 @@
 Set-StrictMode -Version 3.0
 . (Join-Path $PSScriptRoot 'PSAIStorageSafety.ps1')
 
-$script:ModuleName = 'PSAITerminal'
 # 函数可能定义在 Private/ 中，其 $PSScriptRoot 不是模块根，需要模块根时统一使用此值。
 $script:ModuleRoot = $PSScriptRoot
 $script:HostEdition = if ($PSVersionTable.PSEdition) { [string]$PSVersionTable.PSEdition } else { 'Desktop' }

@@ -11,6 +11,11 @@
 - 免确认列表只看命令名：含重定向、赋值、.NET 方法调用或函数定义的命令不再免确认；`git`、`npm`、`dotnet`、`docker`、`winget` 等工具按“工具 子命令”记录和匹配，允许 `git status` 不再放行 `git checkout`。从 2.0.0 配置的 `'git'` 需改成具体子命令，如 `'git status'`。
 - `$Error` 满 256 条后 F7 取不到报错原文：改为比较最新一条错误记录。
 
+### 清理
+
+- 删除无人调用的函数与类型：`Get-AIUserHomeDirectory`、`Assert-AIEndpointUri`（地址校验由 C# `NormalizeBaseEndpoint` 执行）、`Get-AIDefaultEndpoint`、`AITerminalMode` 枚举、仅测试使用的 `AITerminalStreamingTextSanitizer.Reset`。
+- 删除从未读取的配置项 `activeSession`、模型响应中的 `ToolProposalText`（1.x 正文解析命令的遗留），以及流解析函数未使用的协议参数。
+
 ### 测试
 
 - 模拟服务像真实接口一样校验请求，`messages` 不是非空数组时返回 400。

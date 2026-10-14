@@ -1,14 +1,5 @@
 ﻿# 配置管理、原子读写与并发乐观锁。
 
-function Get-AIUserHomeDirectory {
-    $path = [Environment]::GetFolderPath('UserProfile')
-    if ([string]::IsNullOrWhiteSpace($path)) { $path = $HOME }
-    if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-PSAIPathFullyQualified $path)) {
-        throw '无法确定当前用户主目录。'
-    }
-    [IO.Path]::GetFullPath($path)
-}
-
 function ConvertTo-AIJsonMap([AllowNull()]$Value) {
     if ($null -eq $Value -or $Value -is [string] -or $Value -is [ValueType]) { return $Value }
     if ($Value -is [Collections.IDictionary]) {
@@ -64,7 +55,6 @@ function New-AIDefaultConfig {
         mode = 'Off'
         lastEnabledMode = 'Auto'
         activeModel = $null
-        activeSession = $null
         models = [ordered]@{}
         shortcuts = [ordered]@{
             cycleMode = 'F6'
@@ -202,13 +192,6 @@ function ConvertTo-AICapabilities([Collections.IDictionary]$Value) {
     }
 }
 
-function Assert-AIEndpointUri([uri]$Uri) {
-    if (-not [PSAITerminal.AITerminalSecurity]::IsEndpointAllowed($Uri)) {
-        throw '接口地址只允许 HTTPS；HTTP 仅允许本机环回地址，且不能包含用户名或密码。'
-    }
-    if ($Uri.Query -or $Uri.Fragment) { throw '接口基础地址不能包含查询参数或片段。' }
-}
-
 function ConvertTo-AIEndpoint([string]$Protocol, [uri]$Endpoint) {
     ([PSAITerminal.AITerminalEndpointResolver]::NormalizeBaseEndpoint($Protocol, $Endpoint)).AbsoluteUri.TrimEnd('/')
 }
@@ -242,9 +225,6 @@ function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
     }
     foreach ($name in @('enterRouting')) {
         if ($Candidate.integrations[$name] -isnot [bool]) { throw "集成配置 '$name' 必须是布尔值。" }
-    }
-    if ($Candidate.activeSession -and ([string]$Candidate.activeSession) -notmatch '^[a-fA-F0-9]{32}$') {
-        throw '当前会话 ID 无效。'
     }
 
     foreach ($entry in $Candidate.models.GetEnumerator()) {
@@ -287,7 +267,7 @@ function Assert-AIConfigCandidate([Collections.IDictionary]$Candidate) {
 function Merge-AIConfig([Collections.IDictionary]$Loaded) {
     $candidate = New-AIDefaultConfig
     $shortcutVersion = if (Test-AIMapContains $Loaded 'shortcutPresetVersion') { [int]$Loaded.shortcutPresetVersion } else { 1 }
-    foreach ($key in @('revision','language','mode', 'lastEnabledMode', 'activeModel', 'activeSession', 'models', 'onboardingShown')) {
+    foreach ($key in @('revision','language','mode', 'lastEnabledMode', 'activeModel', 'models', 'onboardingShown')) {
         if (Test-AIMapContains $Loaded $key) { $candidate[$key] = $Loaded[$key] }
     }
     foreach ($section in @('shortcuts', 'appearance', 'integrations', 'execution')) {

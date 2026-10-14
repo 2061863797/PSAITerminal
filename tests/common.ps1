@@ -169,23 +169,6 @@ function Start-AIStallingServer {
     Stop-AIMockServer ([pscustomobject]@{Job=$job}); throw '停滞服务启动超时。'
 }
 
-# 从模块源码（主 psm1 与 Private/*.ps1）中取出函数定义文本，供探针脚本单独加载待测函数。
-function Get-PSAISourceFunctionText([Parameter(Mandatory)][string]$Name) {
-    $moduleDirectory = Join-Path (Split-Path -Parent $PSScriptRoot) 'module'
-    $sourceFiles = @(Join-Path $moduleDirectory 'PSAITerminal.psm1') +
-        @(Get-ChildItem -LiteralPath (Join-Path $moduleDirectory 'Private') -Filter '*.ps1' -File | Sort-Object Name | ForEach-Object FullName)
-    foreach ($sourceFile in $sourceFiles) {
-        $tokens = $null; $errors = $null
-        $ast = [Management.Automation.Language.Parser]::ParseFile($sourceFile, [ref]$tokens, [ref]$errors)
-        if ($errors.Count) { throw "模块源码解析失败：$sourceFile" }
-        $node = $ast.Find({ param($candidate)
-            $candidate -is [Management.Automation.Language.FunctionDefinitionAst] -and $candidate.Name -eq $Name
-        }, $false)
-        if ($node) { return $node.Extent.Text }
-    }
-    throw "模块源码中找不到函数：$Name"
-}
-
 # 生成 OpenAI 兼容的流式响应，供模拟服务返回文本或一次 powershell 工具调用。
 function ConvertTo-AIMockSse([string]$Text, $ToolArguments, [string]$ToolCallId = 'call-1') {
     $delta = [ordered]@{}

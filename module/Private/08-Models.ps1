@@ -1,9 +1,5 @@
 ﻿# 模型配置的增删改查、远程模型列表与连通性测试。
 
-function Get-AIDefaultEndpoint([string]$Protocol) {
-    if ($Protocol -eq 'Anthropic') { 'https://api.anthropic.com' } else { 'https://api.openai.com' }
-}
-
 function Get-AIActiveModel {
     $name = [string]$script:Config.activeModel
     if (-not $name -or -not (Test-AIMapContains $script:Config.models $name)) {
