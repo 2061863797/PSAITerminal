@@ -29,7 +29,7 @@ Directory.CreateDirectory(stateRoot);
 string alternateManifestPath = manifestPath;
 if (!useProfile)
 {
-    string moduleVersion = "2.0.0";
+    string moduleVersion = "2.0.1";
     foreach (string line in File.ReadLines(manifestPath))
     {
         string trimmed = line.Trim();

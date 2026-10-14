@@ -291,6 +291,7 @@ function Get-AISessionMessages([Collections.IDictionary]$Model, [string]$Instruc
 
 function Invoke-AISessionModel([Collections.IDictionary]$Model, [string]$Instruction, [switch]$EnableTools,
     [switch]$NoRender, [Threading.CancellationToken]$CancellationToken = [Threading.CancellationToken]::None) {
-    $messages = Get-AISessionMessages $Model $Instruction
+    # @() 防止只有一条消息时 PowerShell 把列表展开成单个字典。
+    $messages = @(Get-AISessionMessages $Model $Instruction)
     Invoke-AIModelText -Model $Model -Messages $messages -EnableTools:$EnableTools -NoRender:$NoRender -CancellationToken $CancellationToken
 }

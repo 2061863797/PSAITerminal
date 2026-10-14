@@ -114,7 +114,7 @@ function Install-PSAIProfileIntegration {
         } else {
             $moduleParent
         }
-        $escapedModuleRoot = ([IO.Path]::GetFullPath($moduleRoot)).Replace("'", "''")
+        $escapedModuleRoot = [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent(([IO.Path]::GetFullPath($moduleRoot)))
         $block = @'
 {START}
 $__psaiModuleRoot = '{MODULE_ROOT}'

@@ -56,6 +56,37 @@ Assert-Equal '任务已完成。' $turns[2].content '模型的结束文字必须
 Assert-Equal $null (& $module { $script:Agent }) '任务结束后不能残留 Agent 状态。'
 Assert-Equal $false (Test-Path Variable:\__psai_*) '调度脚本结束后不能残留内部变量。'
 
+# 1b. 新终端的第一次请求：会话里只有一条消息，请求体 messages 仍必须是数组（模拟服务会校验）。
+New-PSAISession -Title '首次请求' | Out-Null
+$server = Start-AgentScenario @((ConvertTo-AIMockSse '首次回答。')) @()
+try { . ([scriptblock]::Create((& $module { New-AIAgentHarnessScript '第一句话' }))) 3>$null 6>$null }
+finally { $consumed = Stop-AgentScenario $server }
+Assert-True $consumed '全新会话的第一次请求必须成功。'
+Assert-Equal '首次回答。' @(Get-AgentTurns 1)[0].content '全新会话的第一次回答必须写入会话。'
+
+# 1c. Anthropic：任务与工具结果都是 user 角色，合并后只剩一条消息，执行命令后的下一轮请求仍必须成功。
+New-PSAISession -Title 'Anthropic' | Out-Null
+$global:AnthropicProbe = $null
+$server = Start-AgentScenario @((ConvertTo-AIMockAnthropicSse -ToolArguments ([ordered]@{command='$global:AnthropicProbe = 1';purpose='测试'})), (ConvertTo-AIMockAnthropicSse '完成。')) @('')
+try {
+    $mockEndpoint = [uri]"http://127.0.0.1:$($server.Port)"
+    Set-PSAIModel -Name local -Protocol Anthropic -Endpoint $mockEndpoint | Out-Null
+    . ([scriptblock]::Create((& $module { New-AIAgentHarnessScript '设置变量' }))) 3>$null 6>$null
+} finally {
+    $consumed = Stop-AgentScenario $server
+    Set-PSAIModel -Name local -Protocol OpenAIChat -Endpoint $mockEndpoint | Out-Null
+}
+Assert-Equal 1 $global:AnthropicProbe 'Anthropic 工具调用必须被执行。'
+Assert-True $consumed 'Anthropic 执行命令后的下一轮请求必须成功。'
+Assert-Equal '完成。' @(Get-AgentTurns 1)[0].content 'Anthropic 的结束文字必须写入会话。'
+
+# 1d. 中文引号不能截断任务或注入代码：任务文本必须原样交给 Agent。
+$quotedTask = "把‘test’文件夹删掉’; Write-Host INJECTED; ‘"
+$harnessAst = [Management.Automation.Language.Parser]::ParseInput((& $module { param($t) New-AIAgentHarnessScript $t } $quotedTask), [ref]$null, [ref]$null)
+$taskLiteral = $harnessAst.Find({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.Value -eq $quotedTask }, $true)
+Assert-True ($null -ne $taskLiteral) '含中文引号的任务必须作为一个完整字符串传入。'
+Assert-Equal $null ($harnessAst.Find({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Write-Host' }, $true)) '任务文本不能被解析成命令。'
+
 # 2. 非终止错误与原生非零退出都必须判为失败；高风险命令需要 Y 加二次确认。
 $nativeExit = 'cmd /c exit 7'
 $server = Start-AgentScenario @((New-AgentTool "Write-Error 'agent-probe' -ErrorAction Continue; Get-Date | Out-Null"), (New-AgentTool $nativeExit), (ConvertTo-AIMockSse '已结束。')) @('', 'y', 'y')
@@ -116,6 +147,30 @@ Assert-Equal 'Edit' $highRisk.Action '高风险命令输入 A 无效，随后 E 
 Assert-Equal 2 $highRisk.Prompts '高风险命令即使匹配允许列表也必须询问。'
 Assert-Equal $false ($highRisk.Menu -match '\[A\]') '高风险菜单不能出现 [A]。'
 Assert-Equal $true $highRisk.LowAuto 'autoApprove 通配必须对中低风险命令生效。'
+# 免审批只按命令名约束不了写操作；子命令工具按“工具 子命令”匹配。
+$autoApproveCases = & $module {
+    $previous = @($script:Config.execution.autoApprove)
+    $script:Config.execution.autoApprove = @('Get-*', 'git status')
+    try {
+        [ordered]@{
+            'Get-Date' = Test-AIAutoApproved 'Get-Date' 'Low'
+            'Get-Date; [IO.File]::WriteAllText(''x'', ''y'')' = Test-AIAutoApproved 'Get-Date; [IO.File]::WriteAllText(''x'', ''y'')' 'Medium'
+            'Get-ChildItem > out.txt' = Test-AIAutoApproved 'Get-ChildItem > out.txt' 'Medium'
+            '$x = Get-Date' = Test-AIAutoApproved '$x = Get-Date' 'Medium'
+            'git status' = Test-AIAutoApproved 'git status' 'Low'
+            'git -C . status' = Test-AIAutoApproved 'git -C . status' 'Medium'
+            'git checkout -- .' = Test-AIAutoApproved 'git checkout -- .' 'Medium'
+            'git.exe checkout -- .' = Test-AIAutoApproved 'git.exe checkout -- .' 'Medium'
+        }
+    } finally { $script:Config.execution.autoApprove = $previous }
+}
+$expectedAutoApprove = [ordered]@{
+    'Get-Date' = $true; 'Get-Date; [IO.File]::WriteAllText(''x'', ''y'')' = $false; 'Get-ChildItem > out.txt' = $false
+    '$x = Get-Date' = $false; 'git status' = $true; 'git -C . status' = $true; 'git checkout -- .' = $false; 'git.exe checkout -- .' = $false
+}
+foreach ($case in $expectedAutoApprove.GetEnumerator()) {
+    Assert-Equal $case.Value $autoApproveCases[$case.Key] "免审批判断错误：$($case.Key)"
+}
 $global:EditProbe = $null
 $server = Start-AgentScenario @((New-AgentTool '$global:EditProbe = 1')) @('e')
 try { . ([scriptblock]::Create((& $module { New-AIAgentHarnessScript '放入命令行' }))) 6>$null }
@@ -156,5 +211,5 @@ Assert-Throws { & $module { ConvertFrom-AIToolCall @{name='powershell';arguments
 Assert-Equal '' (& $module { ConvertFrom-AIToolCall @{name='powershell';arguments='{"command":"Get-Date"}'} }).purpose 'purpose 缺失时不能阻止合法命令。'
 $agentSystem = & $module { [string](New-AIRequestBody @{protocol='OpenAIChat';modelId='m';parameters=@{}} 'x' -EnableTools).messages[0].content }
 Assert-Match $agentSystem 'powershell tool' 'Agent 系统提示词必须说明工具用法。'
-Remove-Variable AgentAnswers,AgentPrompts,RejectedProbe,EditProbe,RepairProbe,StepLimitProbe -Scope Global -ErrorAction SilentlyContinue
+Remove-Variable AgentAnswers,AgentPrompts,RejectedProbe,EditProbe,RepairProbe,StepLimitProbe,AnthropicProbe -Scope Global -ErrorAction SilentlyContinue
 Remove-Item Function:\Invoke-AgentProbe -ErrorAction SilentlyContinue

@@ -39,8 +39,9 @@
     会话中重新绑定的别名和覆盖内置命令的函数，按实际目标重新分级。
 
 免确认列表
-    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git'
+    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git status'
     匹配的中低风险命令不再询问；高风险命令始终需要确认。
+    git、npm、dotnet 等工具按“工具 子命令”匹配；含重定向、赋值或 .NET 调用的命令总是询问。
 
 失败诊断
     Auto 和 AI 模式下命令失败后会提示“命令失败 · 按 F7 诊断修复”。按 F7，AI 先说明原因再提议

@@ -18,7 +18,7 @@ Install-Module -Name PSAITerminal -Repository PSGallery -Scope CurrentUser
 
 PowerShell 7 也可以用 `Install-PSResource -Name PSAITerminal -Repository PSGallery -Scope CurrentUser`。使用 GitHub Release 安装包时运行 `.\Install-PSAITerminal.ps1 -TargetHost Current`（`-TargetHost Both` 同时安装到 5.1 和 7）。
 
-当前版本为 [`2.0.0`](https://www.powershellgallery.com/packages/PSAITerminal/2.0.0)，变更见 [更新日志](CHANGELOG.md)。从 1.0.x 升级是不兼容升级：请同时升级 Windows PowerShell 5.1 和 PowerShell 7 中的安装（`-TargetHost Both`），旧模型配置会自动迁移。
+当前版本为 [`2.0.1`](https://www.powershellgallery.com/packages/PSAITerminal/2.0.1)，变更见 [更新日志](CHANGELOG.md)。从 1.0.x 升级是不兼容升级：请同时升级 Windows PowerShell 5.1 和 PowerShell 7 中的安装（`-TargetHost Both`），旧模型配置会自动迁移。
 
 > 发布包未做 Authenticode 签名。手动安装时请核对 Release 附带的 `SHA256SUMS-Windows.txt`。
 
@@ -80,9 +80,11 @@ Auto 只判断“这是不是能执行的命令”，不猜你是想咨询还是
 可以让常用的中低风险命令免确认，高风险命令始终需要确认：
 
 ```powershell
-Set-PSAITerminalOption -AutoApprove 'Get-*', 'git', 'Select-String'
+Set-PSAITerminalOption -AutoApprove 'Get-*', 'git status', 'git log', 'Select-String'
 Set-PSAITerminalOption -AutoApprove @()      # 清空
 ```
+
+`git`、`npm`、`dotnet`、`docker`、`winget` 等工具按“工具 子命令”匹配，允许 `git status` 不会放行 `git checkout`。命令中含有重定向（`>`）、变量赋值或 .NET 方法调用时，总是需要确认。
 
 ### 失败时诊断
 

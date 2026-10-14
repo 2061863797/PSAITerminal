@@ -416,11 +416,12 @@ public static class AITerminalSecurity
     };
 
     private static readonly Regex s_highRiskNativeArguments = new(
-        @"^\s*(?:reg\s+(?:add|delete|import|restore|load|unload)\b|sc\s+(?:config|delete|stop)\b|(?:winget|choco)\s+(?:install|uninstall|upgrade)\b|git\s+(?:clean\b|reset\s+.*--hard\b|push\s+.*(?:--force\b|-f\b)|branch\s+.*-D\b))",
+        @"^\s*(?:reg\s+(?:add|delete|import|restore|load|unload)\b|sc\s+(?:config|delete|stop)\b|(?:winget|choco)\s+(?:install|uninstall|upgrade)\b|git(?:\s+-[Cc]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*\s+(?:clean\b|reset\s+.*--hard\b|push\s+.*(?:--force\b|-f\b)|branch\s+.*-D\b))",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    // --output 会把结果写入（覆盖）文件，不属于只读查询。
     private static readonly Regex s_lowRiskGit = new(
-        @"^\s*git\s+(?:status|log|diff|show|branch)(?:\s+(?!.*(?:-d\b|-D\b|-m\b|-M\b|--delete\b|--move\b)).*)?$",
+        @"^\s*git\s+(?:status|log|diff|show|branch)(?:\s+(?!.*(?:-d\b|-D\b|-m\b|-M\b|--delete\b|--move\b|--output\b)).*)?$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly HashSet<string> s_destructiveMemberNames = new(StringComparer.OrdinalIgnoreCase)
@@ -501,31 +502,37 @@ public static class AITerminalSecurity
             return AITerminalRisk.High;
         }
 
-        string name = rawName!;
-        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-        {
-            name = name.Substring(0, name.Length - 4);
-        }
-
-        if (s_standardCommandAliases.TryGetValue(name, out string? resolvedName))
+        string name = NormalizeCommandName(rawName!);
+        // 带扩展名或路径时指向外部程序：5.1 中 sc 是 Set-Content 的别名，sc.exe 才是服务控制程序。
+        bool explicitProgram = !name.Equals(rawName!.Trim(), StringComparison.OrdinalIgnoreCase);
+        if (!explicitProgram && s_standardCommandAliases.TryGetValue(name, out string? resolvedName))
         {
             name = resolvedName;
         }
 
-        string text = commandAst.Extent.Text;
+        // 参数规则按“规范化命令名 + 原参数”匹配，reg.exe、C:\Windows\System32\reg.exe 与 reg 同等对待。
+        string text = name + " " + string.Join(" ", commandAst.CommandElements.Skip(1).Select(static element => element.Extent.Text));
+        // PowerShell 允许参数名缩写，-f、-fo 与 -Force 等价。
         bool hasForce = commandAst.CommandElements.Any(static element =>
             element is CommandParameterAst parameter &&
-            parameter.ParameterName.Equals("Force", StringComparison.OrdinalIgnoreCase));
+            parameter.ParameterName.Length > 0 &&
+            "Force".StartsWith(parameter.ParameterName, StringComparison.OrdinalIgnoreCase));
+        bool startProcess = name.Equals("Start-Process", StringComparison.OrdinalIgnoreCase);
         bool runAs = commandAst.CommandElements.Any(static element =>
             element.Extent.Text.Equals("RunAs", StringComparison.OrdinalIgnoreCase) ||
             element.Extent.Text.Equals("'RunAs'", StringComparison.OrdinalIgnoreCase) ||
             element.Extent.Text.Equals("\"RunAs\"", StringComparison.OrdinalIgnoreCase));
+        // Start-Process 启动的程序本身是高风险命令（如 powershell、cmd）时同样按高风险处理。
+        bool startsHighRiskProgram = startProcess && commandAst.CommandElements.Skip(1).Any(static element =>
+            element is StringConstantExpressionAst constant &&
+            s_highRiskCommandNames.Contains(NormalizeCommandName(constant.Value)));
 
         if (s_highRiskCommandNames.Contains(name) ||
             s_highRiskNativeArguments.IsMatch(text) ||
             (hasForce && (name.Equals("Copy-Item", StringComparison.OrdinalIgnoreCase) ||
                 name.Equals("Move-Item", StringComparison.OrdinalIgnoreCase))) ||
-            (runAs && name.Equals("Start-Process", StringComparison.OrdinalIgnoreCase)))
+            (runAs && startProcess) ||
+            startsHighRiskProgram)
         {
             return AITerminalRisk.High;
         }
@@ -543,6 +550,29 @@ public static class AITerminalSecurity
         return s_lowRiskPrefixes.Any(prefix => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             ? AITerminalRisk.Low
             : AITerminalRisk.Medium;
+    }
+
+    /// <summary>
+    /// 去掉路径和可执行扩展名：C:\Windows\System32\reg.exe → reg。PowerShell 命令名原样返回。
+    /// </summary>
+    public static string NormalizeCommandName(string name)
+    {
+        string trimmed = name.Trim().Trim('"', '\'');
+        if (trimmed.IndexOfAny(new[] { '\\', '/' }) >= 0)
+        {
+            try { trimmed = Path.GetFileName(trimmed); }
+            catch (ArgumentException) { return trimmed; }
+        }
+
+        foreach (string extension in new[] { ".exe", ".com", ".cmd", ".bat" })
+        {
+            if (trimmed.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+            {
+                return trimmed.Substring(0, trimmed.Length - extension.Length);
+            }
+        }
+
+        return trimmed;
     }
 
     public static string? ProtectText(string? text, IEnumerable<string>? secrets, int maximumCharacters)

@@ -57,6 +57,21 @@ function Start-AIMockServer([string[]]$Responses) {
                     }
                     $statusCode = 200; $statusText = 'OK'; $responsePayload = [string]$payload; $extraHeaders = ''
                     $splitLength = 0; $splitDelayMilliseconds = 0
+                    # 像真实服务一样校验请求：messages 必须是非空 JSON 数组，否则返回 400。
+                    $requestError = $null
+                    if ($headerEnd -ge 0 -and $contentLength -gt 0) {
+                        $bodyLength = [Math]::Min($contentLength, $total - $headerEnd - 4)
+                        try {
+                            $requestJson = [Text.Encoding]::UTF8.GetString($buffer, $headerEnd + 4, $bodyLength) | ConvertFrom-Json -ErrorAction Stop
+                            if ($requestJson.PSObject.Properties['messages'] -and
+                                ($requestJson.messages -isnot [array] -or $requestJson.messages.Count -eq 0)) {
+                                $requestError = 'messages: Input should be a valid non-empty list'
+                            }
+                        } catch { $requestError = "request body is not valid JSON: $($_.Exception.Message)" }
+                    }
+                    if ($requestError) {
+                        $responsePayload = "__STATUS_400__{`"error`":{`"message`":`"$($requestError.Replace('"', "'"))`"}}"
+                    }
                     if ($responsePayload -match '^__STATUS_(\d{3})__(.*)$') {
                         $statusCode = [int]$Matches[1]
                         $statusText = if ($statusCode -eq 429) { 'Too Many Requests' } else { 'Test Error' }
@@ -182,4 +197,21 @@ function ConvertTo-AIMockSse([string]$Text, $ToolArguments, [string]$ToolCallId 
     $finish = if ($null -ne $ToolArguments) { 'tool_calls' } else { 'stop' }
     $chunk = @{choices=@(@{delta=$delta;finish_reason=$finish})} | ConvertTo-Json -Depth 20 -Compress
     "data: $chunk`r`n`r`ndata: [DONE]`r`n`r`n"
+}
+
+# 生成 Anthropic Messages 流式响应：文本块或一次 powershell tool_use。
+function ConvertTo-AIMockAnthropicSse([string]$Text, $ToolArguments) {
+    $events = [Collections.Generic.List[object]]::new()
+    $events.Add(@{type='message_start';message=@{usage=@{input_tokens=1;output_tokens=0}}})
+    if ($Text) {
+        $events.Add(@{type='content_block_start';index=0;content_block=@{type='text';text=''}})
+        $events.Add(@{type='content_block_delta';index=0;delta=@{type='text_delta';text=$Text}})
+    }
+    if ($null -ne $ToolArguments) {
+        $events.Add(@{type='content_block_start';index=1;content_block=@{type='tool_use';id='toolu_1';name='powershell';input=@{}}})
+        $events.Add(@{type='content_block_delta';index=1;delta=@{type='input_json_delta';partial_json=($ToolArguments | ConvertTo-Json -Depth 20 -Compress)}})
+    }
+    $events.Add(@{type='message_delta';usage=@{output_tokens=1}})
+    $events.Add(@{type='message_stop'})
+    ($events | ForEach-Object { "event: $($_.type)`r`ndata: $($_ | ConvertTo-Json -Depth 20 -Compress)`r`n`r`n" }) -join ''
 }

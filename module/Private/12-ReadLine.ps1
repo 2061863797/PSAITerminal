@@ -37,7 +37,7 @@ function ConvertTo-AISubmittedLine([string]$Line) {
     if ($trimmed -match '^(?i:ai)\s+(?:clear|reset)$') { return 'Clear-PSAISession' }
     if ($trimmed -match '^(?i:ai)\s+new(?:\s+(.+))?$') {
         $title = if ($Matches[1]) { $Matches[1].Trim() } else { '新会话' }
-        return "New-PSAISession -Title '$($title.Replace("'", "''"))'"
+        return "New-PSAISession -Title $(ConvertTo-AISingleQuotedLiteral $title)"
     }
     if ($trimmed -match '^(?i:ai)\s+mode(?:\s+(Off|AI|Auto))?$') {
         if ($Matches[1]) { return "Set-PSAITerminalMode -Mode '$($Matches[1])'" }

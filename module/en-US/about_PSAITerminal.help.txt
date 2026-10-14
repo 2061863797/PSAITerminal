@@ -45,8 +45,10 @@ RISK
     Aliases and functions redefined in the session are classified by their real target.
 
 AUTO-APPROVE
-    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git'
+    Set-PSAITerminalOption -AutoApprove 'Get-*', 'git status'
     Matching Low and Medium commands run without approval. High risk always asks.
+    Tools such as git, npm and dotnet match as "tool subcommand". Commands with
+    redirection, assignments or .NET method calls always ask.
 
 FAILURES
     In Auto and AI mode a failed command shows "Command failed · press F7 to diagnose

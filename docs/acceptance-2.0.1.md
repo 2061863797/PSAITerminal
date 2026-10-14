@@ -1,6 +1,6 @@
 ﻿# 本地手动验收
 
-这是 2.0.0 的手动验收清单。不要覆盖正式安装、Profile 或真实配置。自动测试使用模拟模型，真实模型和真实终端体验仍需按下面的清单验收。
+这是 2.0.1 的手动验收清单。不要覆盖正式安装、Profile 或真实配置。自动测试使用模拟模型，真实模型和真实终端体验仍需按下面的清单验收。
 
 ## 打开隔离终端
 
@@ -10,7 +10,7 @@
 $testRoot = Join-Path $env:TEMP ('PSAI.Manual.' + [guid]::NewGuid().ToString('N'))
 $env:PSAI_CONFIG_HOME = Join-Path $testRoot 'config'
 $env:PSAI_DATA_HOME = Join-Path $testRoot 'data'
-$package = 'C:\Users\LXT\Desktop\PSAITerminal\out\PSAITerminal-2.0.0'
+$package = 'C:\Users\LXT\Desktop\PSAITerminal\out\PSAITerminal-2.0.1'
 $moduleRoot = Join-Path $testRoot 'modules'
 New-Item -ItemType Directory -Path $moduleRoot,(Join-Path $testRoot 'profile') -Force | Out-Null
 Copy-Item -LiteralPath $package -Destination (Join-Path $moduleRoot 'PSAITerminal') -Recurse
@@ -24,7 +24,46 @@ ai
 
 在设置里添加测试模型；密钥选择“仅当前会话”，不要在聊天或测试记录中粘贴密钥。然后输入 `ai mode Auto`。确认菜单不是沙箱，仍须检查命令：文件操作只能针对刚创建的测试工作目录，拒绝任何真实目录、系统或网络设置的修改。
 
-## 验收清单
+## 2.0.1 修复项（先验这几项）
+
+| 输入或操作 | 预期 |
+|---|---|
+| 刚打开的隔离终端里，第一句就输入 `你好` | 模型正常回答。2.0.0 在这里必定报“无法转换参数” |
+| 新开一个隔离终端，先执行 `Get-Item 不存在的文件`，再按 F7 | 第一次请求就能诊断，不报错 |
+| `把‘测试’这两个字原样重复一遍`（用中文输入法的单引号） | 模型回答里能看到完整的“‘测试’”；不出现语法错误，也不执行任何命令 |
+| `ai new 我的‘会话’`，再运行 `(Get-PSAISession)[0].Title` | 显示完整标题 `我的‘会话’` |
+| 粘贴下面的“风险分级检查” | 每行都是 `High` |
+| 粘贴下面的“免确认检查” | 每行的“实际”与“预期”一致 |
+| 先运行 `foreach ($i in 1..300) { Write-Error "x$i" -EA SilentlyContinue }`，再执行 `Get-Item 不存在的文件`，按 F7 | 模型的诊断里提到“找不到路径”这一真实报错，而不是笼统的“命令失败” |
+| 有 Anthropic（Claude）密钥时：添加 Anthropic 模型，让它执行一条查询命令（如“列出当前目录的文件”） | 执行后模型能接着给出结论，不报 HTTP 400。没有密钥可跳过，自动测试已覆盖 |
+
+风险分级检查（只做判断，不会执行这些命令）：
+
+```powershell
+& (Get-Module PSAITerminal) {
+    'reg.exe delete HKCU\Software\PSAITest /f', 'sc.exe delete PSAITest', 'git.exe clean -fdx', 'git -C . clean -fdx',
+    'C:\Windows\System32\cmd.exe /c del x', 'Copy-Item a b -f', 'Start-Process powershell -ArgumentList ''-enc AAAA''' |
+        ForEach-Object { '{0,-6} {1}' -f (Get-AICommandRisk $_), $_ }
+}
+```
+
+免确认检查（临时设置免确认列表，检查后恢复）：
+
+```powershell
+& (Get-Module PSAITerminal) {
+    $saved = @($script:Config.execution.autoApprove)
+    $script:Config.execution.autoApprove = @('Get-*', 'git status')
+    try {
+        $cases = [ordered]@{ 'Get-Date' = $true; 'git status' = $true; 'Get-Date; [IO.File]::WriteAllText(''x'',''y'')' = $false
+            'Get-ChildItem > out.txt' = $false; 'git checkout -- .' = $false }
+        $cases.GetEnumerator() | ForEach-Object {
+            '预期 {0,-5} 实际 {1,-5} {2}' -f $_.Value, (Test-AIAutoApproved $_.Key (Get-AICommandRisk $_.Key)), $_.Key
+        }
+    } finally { $script:Config.execution.autoApprove = $saved }
+}
+```
+
+## 完整验收清单
 
 | 输入或操作 | 预期 |
 |---|---|

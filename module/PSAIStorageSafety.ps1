@@ -391,7 +391,7 @@ try {
     exit 0
 } catch { Write-Error $_ -ErrorAction Continue; exit 1 }
 '@
-    $childScript = $childTemplate.Replace('{CORE}', $CoreAssemblyPath.Replace("'", "''"))
+    $childScript = $childTemplate.Replace('{CORE}', [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($CoreAssemblyPath))
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
     $hostPath = Join-Path $PSHOME $(if ($PSVersionTable.PSEdition -eq 'Core') {'pwsh.exe'} else {'powershell.exe'})
     $process = [Diagnostics.Process]::new()

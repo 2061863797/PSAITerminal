@@ -169,13 +169,15 @@ Answer directly and concisely. When a command helps, show the shortest direct Po
 你是运行在用户本地 PowerShell 会话中的助手。用简体中文回答；不要请求或输出 API Key。
 直接、简洁地回答。需要命令时，在 ```powershell 代码块中给出最短、最直接的 PowerShell 命令；你不能自己执行命令。
 "@
-    }    $runtimeContext = Get-AIRuntimeContextText
+    }
+    $runtimeContext = Get-AIRuntimeContextText
     $system = "$baseSystem`n`n$runtimeContext"
     $protocol = [string]$Model.protocol
     $hasMessages = ($null -ne $Messages -and $Messages.Count -gt 0)
 
     if (-not $hasMessages) { $Messages = @([ordered]@{role='user';content=$Prompt}) }
-    $protocolMessages = ConvertTo-AIProtocolMessages $Messages $protocol $system
+    # @() 防止合并后只剩一条消息时 PowerShell 把列表展开成单个字典，序列化成 JSON 对象而不是数组。
+    $protocolMessages = @(ConvertTo-AIProtocolMessages $Messages $protocol $system)
     $body = if ($protocol -eq 'Anthropic') {
         [ordered]@{model=$Model.modelId;max_tokens=4096;system=$system;messages=$protocolMessages;stream=$true}
     } else {

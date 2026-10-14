@@ -204,16 +204,24 @@ $statusProbe = & $module {
     try {
         $script:Config.mode = 'Off'
         $script:FakeHistory = [pscustomobject]@{Id=9001;CommandLine='Get-Item missing-file';ExecutionStatus='Completed'}
+        # $Error 已满（256 条）时数量不再增长，新错误仍必须被识别并取到原文。
+        1..300 | ForEach-Object { Write-Error "status-filler-$_" -ErrorAction SilentlyContinue 2>$null }
+        $script:LastErrorRecord = $global:Error[0]
+        $countBefore = $global:Error.Count
         Write-Error 'status-probe-error' -ErrorAction SilentlyContinue 2>$null
-        $script:LastErrorCount = $global:Error.Count - 1
         Update-AILastCommandStatus $false
         $failed = $script:LastCommand
+        $saturated = $countBefore -eq $global:Error.Count
         $script:FakeHistory = [pscustomobject]@{Id=9002;CommandLine='. (Invoke-PSAI)';ExecutionStatus='Completed'}
         Update-AILastCommandStatus $false
         $afterHarness = $script:LastCommand
-        $script:FakeHistory = [pscustomobject]@{Id=9003;CommandLine='Get-Date';ExecutionStatus='Completed'}
+        # 没有新错误记录的失败（如原生命令非零退出）不能沿用上一条错误原文。
+        $script:FakeHistory = [pscustomobject]@{Id=9003;CommandLine='cmd /c exit 3';ExecutionStatus='Completed'}
+        Update-AILastCommandStatus $false
+        $noNewError = $script:LastCommand
+        $script:FakeHistory = [pscustomobject]@{Id=9004;CommandLine='Get-Date';ExecutionStatus='Completed'}
         Update-AILastCommandStatus $true
-        [pscustomobject]@{Failed=$failed;AfterHarness=$afterHarness;Succeeded=$script:LastCommand}
+        [pscustomobject]@{Failed=$failed;Saturated=$saturated;AfterHarness=$afterHarness;NoNewError=$noNewError;Succeeded=$script:LastCommand}
     } finally {
         Remove-Item Function:\Get-History -ErrorAction SilentlyContinue
         $script:Config.mode = $previousMode
@@ -221,6 +229,8 @@ $statusProbe = & $module {
     }
 }
 Assert-Equal $false $statusProbe.Failed.Succeeded '失败命令必须记录为失败。'
-Assert-Match $statusProbe.Failed.Error 'status-probe-error' '失败命令必须记录新的错误信息。'
+Assert-True $statusProbe.Saturated '测试前提：$Error 必须已满，数量不再增长。'
+Assert-Match $statusProbe.Failed.Error 'status-probe-error' '$Error 已满时失败命令仍必须记录新的错误信息。'
+Assert-True ($statusProbe.NoNewError.Error -notmatch 'status-probe-error') '没有新错误时不能沿用上一条错误原文。'
 Assert-True ([object]::ReferenceEquals($statusProbe.Failed, $statusProbe.AfterHarness)) 'AI 调度行不能覆盖上一条命令记录。'
 Assert-Equal $true $statusProbe.Succeeded.Succeeded '成功命令必须记录为成功。'

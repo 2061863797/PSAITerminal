@@ -29,21 +29,48 @@ function ConvertFrom-AIToolCall($Call) {
     [ordered]@{ id = $(if ($id) { $id } else { [guid]::NewGuid().ToString('N') }); command = $command; purpose = $purpose }
 }
 
-function Get-AICommandNames([string]$Command) {
+# 返回命令中每个调用的免审批键：普通命令为命令名；子命令决定读写的工具为“工具 子命令”，
+# 允许 git status 不等于允许 git checkout。
+function Get-AICommandApprovalKeys([string]$Command) {
+    $subcommandTools = @('git','npm','pnpm','yarn','dotnet','cargo','docker','kubectl','pip','winget','choco','scoop','gh','az','wsl')
     $tokens = $null; $parseErrors = $null
     $ast = [Management.Automation.Language.Parser]::ParseInput($Command, [ref]$tokens, [ref]$parseErrors)
-    @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) |
-        ForEach-Object { $_.GetCommandName() } | Where-Object { $_ } | Sort-Object -Unique)
+    $keys = foreach ($commandAst in $ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true)) {
+        $rawName = $commandAst.GetCommandName()
+        if (-not $rawName) { continue }
+        $tool = [PSAITerminal.AITerminalSecurity]::NormalizeCommandName($rawName)
+        if ($tool -notin $subcommandTools) { $rawName; continue }
+        $subcommand = $null
+        $elements = @($commandAst.CommandElements | Select-Object -Skip 1)
+        for ($index = 0; $index -lt $elements.Count; $index++) {
+            $text = $elements[$index].Extent.Text
+            if ($text -cin @('-C','-c')) { $index++; continue }
+            if ($text.StartsWith('-')) { continue }
+            $subcommand = $text; break
+        }
+        if ($subcommand) { "$($tool.ToLowerInvariant()) $subcommand" } else { $tool.ToLowerInvariant() }
+    }
+    @($keys | Sort-Object -Unique)
 }
 
-# 只有中低风险、且每个命令名都在会话允许列表或 execution.autoApprove 中时才免审批。
+# 只有中低风险、不含重定向/赋值/.NET 调用等无法按命令名约束的写操作，
+# 且每个命令都在会话允许列表或 execution.autoApprove 中时才免审批。
 function Test-AIAutoApproved([string]$Command, [string]$Risk) {
     if ($Risk -eq 'High') { return $false }
-    $names = @(Get-AICommandNames $Command)
-    if ($names.Count -eq 0) { return $false }
+    $tokens = $null; $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseInput($Command, [ref]$tokens, [ref]$parseErrors)
+    $unboundWrite = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.FileRedirectionAst] -or
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -or
+        $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -or
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -or
+        $node -is [Management.Automation.Language.TypeDefinitionAst] }, $true)
+    if ($unboundWrite) { return $false }
+    $keys = @(Get-AICommandApprovalKeys $Command)
+    if ($keys.Count -eq 0) { return $false }
     $patterns = @(@($script:Config.execution.autoApprove) + @($script:SessionAllowedCommands) | Where-Object { $_ })
-    foreach ($name in $names) {
-        if (-not @($patterns | Where-Object { $name -like $_ }).Count) { return $false }
+    foreach ($key in $keys) {
+        if (-not @($patterns | Where-Object { $key -like $_ }).Count) { return $false }
     }
     $true
 }
@@ -56,7 +83,7 @@ function Request-AICommandApproval([Collections.IDictionary]$Proposal) {
         Write-AIColoredHost "› $(Get-AIText 'AutoApproved')：$command" DarkGray
         return [pscustomobject]@{ Action = 'Run'; Feedback = $null }
     }
-    $names = @(Get-AICommandNames $command)
+    $names = @(Get-AICommandApprovalKeys $command)
     Write-Host ''
     if ($Proposal.purpose) { Write-Host "$(Get-AIText 'ApprovalPurpose')：$($Proposal.purpose)" }
     Write-AIColoredHost "  $command" $riskColor
@@ -193,7 +220,13 @@ try {
     Remove-Variable -Name '{NAME}' -Scope 0 -ErrorAction SilentlyContinue
 }
 '@
-    $template.Replace('{TASK}', $Task.Replace("'", "''")).Replace('${V}', "`$$name").Replace('{NAME}', $name)
+    # 任务文本最后填入，避免其中的占位符被再次替换。
+    $template.Replace('${V}', "`$$name").Replace('{NAME}', $name).Replace("'{TASK}'", (ConvertTo-AISingleQuotedLiteral $Task))
+}
+
+# PowerShell 把 ‘ ’ ‚ ‛ 也当作单引号，只转义 ' 会让中文引号截断字符串并注入代码。
+function ConvertTo-AISingleQuotedLiteral([AllowNull()][string]$Text) {
+    "'" + [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent([string]$Text) + "'"
 }
 
 function New-AIPendingInvocationLine([string]$ScriptText) {
@@ -224,13 +257,12 @@ function ConvertTo-AIAgentLine([string]$Task) {
 # F7：上一条命令失败时诊断并提议修复（可执行），成功时只解释。
 function ConvertTo-AIExplainLine {
     $last = $script:LastCommand
-    if (-not $last) { return "Write-Warning '$((Get-AIText 'NothingToExplain').Replace("'", "''"))'" }
+    if (-not $last) { return "Write-Warning $(ConvertTo-AISingleQuotedLiteral (Get-AIText 'NothingToExplain'))" }
     if (-not $last.Succeeded) {
         $detail = if ($last.Error) { $last.Error } elseif ($last.ExitCode) { Get-AIText 'StepFailedExit' @($last.ExitCode) } else { Get-AIText 'StepFailed' }
         return ConvertTo-AIAgentLine (Get-AIText 'FixTask' @($last.Command, $detail))
     }
-    $prompt = (Get-AIText 'ExplainTask' @($last.Command)).Replace("'", "''")
-    New-AIPendingInvocationLine "Invoke-PSAI -Prompt '$prompt'"
+    New-AIPendingInvocationLine "Invoke-PSAI -Prompt $(ConvertTo-AISingleQuotedLiteral (Get-AIText 'ExplainTask' @($last.Command)))"
 }
 
 function Invoke-PSAI {

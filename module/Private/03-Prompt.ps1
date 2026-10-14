@@ -51,9 +51,10 @@ function Find-AILegacyOriginalPrompt {
 
 # 记录上一条交互命令的结果；失败时提示 F7。AI 调度行和模块内部命令不记录。
 function Update-AILastCommandStatus([bool]$LastSuccess) {
-    $errorCount = $global:Error.Count
-    $newErrors = $errorCount -gt [int]$script:LastErrorCount
-    $script:LastErrorCount = $errorCount
+    # $Error 最多保留 256 条，满了以后数量不再变化，所以比较最新一条记录本身。
+    $latestError = if ($global:Error.Count) { $global:Error[0] } else { $null }
+    $newErrors = $null -ne $latestError -and -not [object]::ReferenceEquals($latestError, $script:LastErrorRecord)
+    $script:LastErrorRecord = $latestError
     $entry = Get-History -Count 1
     if (-not $entry -or $entry.Id -eq $script:LastHistoryId) { return }
     $script:LastHistoryId = $entry.Id

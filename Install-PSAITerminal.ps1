@@ -194,7 +194,7 @@ catch { Write-Warning "PSAITerminal 自动加载失败：$($_.Exception.Message)
 Remove-Variable __psaiModuleRoot -ErrorAction SilentlyContinue
 # PSAITerminal 自动加载（结束）
 '@
-        $escapedModuleRoot = $resolvedModuleRoot.Replace("'", "''")
+        $escapedModuleRoot = [Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($resolvedModuleRoot)
         $block = $block.Replace('{MODULE_ROOT}', $escapedModuleRoot).Replace('{VERSION}', $moduleVersion)
         $profileUpdate = Get-PSAIProfileUpdate $profileContent $block
         if ($profileUpdate.RepairNeeded -and (Test-Path -LiteralPath $profilePath -PathType Leaf)) {
